@@ -1,0 +1,13 @@
+Upstream source: https://github.com/openbao/go-kms-wrapping pull request 168 "feat(exoscalekms): add Exoscale KMS wrapper",
+commit cde32eb9b902bae1d97b3ef2b8b92e00d9c47f4e (author Leo Loch, 2026-11-12), open and unreviewed when fetched on 2026-11-21.
+Issue 167 of the same repository: the author is on the Exoscale KMS team and commits to maintain the wrapper.
+Licence MPL-2.0 (file headers). The files below were rebuilt from pr168.diff (also in this pack); each Git blob
+hash was checked against the index line of the diff. Lines: sha256, path, size, Git blob hash.
+Module path declared upstream: github.com/openbao/go-kms-wrapping/wrappers/exoscalekms/v2
+SKIPPED (modified upstream file, not new): .github/workflows/go.yml
+a76048608bfd31a321d919b97b2dc63e742be0dd2d490394f231aafa80120c1e  wrappers/exoscalekms/exoscalekms.go  bytes=5808 git_blob=208ef34347fa4ed9b0ce109f493c3ba023ec79d3 matches_diff_index=True
+c3d454f0ce30a0a4e60cbffdcc4322089b3a236420a55f66c9273b1ec3c85faa  wrappers/exoscalekms/exoscalekms_acc_test.go  bytes=884 git_blob=03e46729d3ef9ef4c81532472f33d35ce7e85ce6 matches_diff_index=True
+f3b5b5aa9aae6b0b588a4c6e2b30d0c269a28b657ba85a9d1451ba301f3bc07a  wrappers/exoscalekms/exoscalekms_test.go  bytes=5147 git_blob=47e2ea2f12d2273054200fd30b19405c813e203c matches_diff_index=True
+bba6416c97ac441069eee1cb4b835deeb2700f41e38fc055ffa80085334a160a  wrappers/exoscalekms/go.mod  bytes=2315 git_blob=4c7025531ec043078454c998a5f171cfd1f0fb57 matches_diff_index=True
+792cd4e10adfa6c99ddd7ffa96859d6a5b63c09143b146ca4a51007a1a5a312a  wrappers/exoscalekms/go.sum  bytes=13379 git_blob=e6c47cd3f7fd18a2b11b1419ebde99dd2c5ec467 matches_diff_index=True
+c91e8ccd0b8c63d757c883ef7d7d65740bf3ab4d29ecc7caef48e7bbf2d912e4  wrappers/exoscalekms/options.go  bytes=1090 git_blob=b5e21c56e0f3b4ad1cb35e900a19a50d0e94af2c matches_diff_index=True

@@ -1,0 +1,107 @@
+# SPDX-License-Identifier: MPL-2.0
+name: Build and test
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+
+env:
+  CGO_ENABLED: '0'
+  GOTOOLCHAIN: local
+  GOFLAGS: '-p=1'
+  GOGC: '50'
+  GOMEMLIMIT: 5GiB
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.4'
+      - name: Verify modules and formatting
+        run: |
+          go mod download
+          go mod verify
+          test -z "$(gofmt -l cmd internal)"
+          manifest=third_party/exoscalekms/MANIFEST.txt
+          awk '$2 ~ /^wrappers\/exoscalekms\// {
+            sub("^wrappers/exoscalekms/", "third_party/exoscalekms/", $2)
+            print $1, $2
+          }' "$manifest" | sha256sum -c -
+      - name: Vet and test
+        env:
+          GOPROXY: 'off'
+          EXOSCALEKMS_LIVE: '0'
+        run: |
+          go list ./... > "$RUNNER_TEMP/packages"
+          while IFS= read -r package; do
+            go vet -mod=readonly "$package"
+            go test -mod=readonly -timeout 10m -count=1 "$package"
+          done < "$RUNNER_TEMP/packages"
+          go test -mod=readonly -timeout 10m -count=1 github.com/openbao/go-kms-wrapping/wrappers/exoscalekms/v2
+
+  build:
+    strategy:
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: source-${{ matrix.runner }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - name: Build binaries
+        working-directory: source-${{ matrix.runner }}
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          GOAMD64: v1
+        run: |
+          go mod download
+          go mod verify
+          mkdir -p "$RUNNER_TEMP/bin"
+          for command in openbao-plugin-kms-exoscale tofu-keyprovider-exoscale-kms; do
+            GOPROXY=off go build -mod=readonly -trimpath -buildvcs=false -ldflags='-s -w' \
+              -o "$RUNNER_TEMP/bin/$command" "./cmd/$command"
+          done
+          EXOSCALEKMS_TEST_PLUGIN_BINARY="$RUNNER_TEMP/bin/openbao-plugin-kms-exoscale" GOPROXY=off \
+            go test -mod=readonly -timeout 10m -count=1 -run '^TestPluginExecutable$' ./cmd/openbao-plugin-kms-exoscale
+          cd "$RUNNER_TEMP/bin"
+          go version -m tofu-keyprovider-exoscale-kms > provider.buildinfo
+          if grep -Eq '^[[:space:]]+dep[[:space:]]' provider.buildinfo; then
+            echo "state provider links third-party modules" >&2
+            exit 1
+          fi
+          sha256sum openbao-plugin-kms-exoscale tofu-keyprovider-exoscale-kms > SHA256SUMS
+      - name: Scan binaries
+        run: |
+          GOBIN="$RUNNER_TEMP/tools" go install golang.org/x/vuln/cmd/govulncheck@v1.10.0
+          for command in openbao-plugin-kms-exoscale tofu-keyprovider-exoscale-kms; do
+            "$RUNNER_TEMP/tools/govulncheck" -mode=binary "$RUNNER_TEMP/bin/$command"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: checksums-${{ matrix.runner }}
+          path: ${{ runner.temp }}/bin/SHA256SUMS
+          if-no-files-found: error
+
+  reproducibility:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: checksums-*
+          path: ${{ runner.temp }}/build-checksums
+      - name: Compare digests across runner images
+        working-directory: ${{ runner.temp }}/build-checksums
+        run: diff -u checksums-ubuntu-22.04/SHA256SUMS checksums-ubuntu-24.04/SHA256SUMS
