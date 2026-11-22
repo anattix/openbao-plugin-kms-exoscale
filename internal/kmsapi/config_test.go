@@ -110,3 +110,31 @@ func TestReadExactCredentialFile(t *testing.T) {
 		})
 	}
 }
+
+func TestEncryptionContextValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		invalid     bool
+	}{
+		{name: "unset"},
+		{name: "1024 bytes", value: strings.Repeat("é", 512)},
+		{name: "1025 bytes", value: strings.Repeat("é", 512) + "x", invalid: true},
+		{name: "invalid UTF-8", value: "\xff", invalid: true},
+		{name: "NUL", value: "stack\x00name", invalid: true},
+		{name: "terminal control", value: "stack\u007fname", invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := map[string]string{"zone": "ch-gva-2", "encryption_context": tc.value}
+			const id = "44444444-4444-4444-8444-444444444444"
+			cfg, err := Resolve(t.Context(), settings, id, true)
+			const invalid = "EXOSCALEKMS_ENCRYPTION_CONTEXT must be at most 1024 bytes of printable UTF-8"
+			if tc.invalid {
+				if err == nil || err.Error() != invalid {
+					t.Fatal("expected safe encryption context validation error")
+				}
+			} else if err != nil || cfg.EncryptionContext != tc.value {
+				t.Fatal("valid context changed or was rejected")
+			}
+		})
+	}
+}

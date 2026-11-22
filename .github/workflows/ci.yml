@@ -33,6 +33,11 @@ jobs:
             sub("^wrappers/exoscalekms/", "third_party/exoscalekms/", $2)
             print $1, $2
           }' "$manifest" | sha256sum -c -
+      - name: Validate rehearsal script
+        run: |
+          bash -n scripts/e2e-openbao.sh
+          python3 -I scripts/test-e2e-openbao.py
+          if command -v shellcheck >/dev/null; then shellcheck scripts/e2e-openbao.sh; fi
       - name: Vet and test
         env:
           GOPROXY: 'off'

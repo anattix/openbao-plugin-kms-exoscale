@@ -54,3 +54,23 @@ func TestPluginRejectsTamperedEnvelope(t *testing.T) {
 		t.Fatal("tampered envelope must make exactly one KMS decrypt call")
 	}
 }
+
+func TestPluginReportsInvalidWrappedKey(t *testing.T) {
+	cfg, endpoint := fakeEndpoint(t, nil)
+	w := pluginClient(t, "TestServer")
+	if err := configureRemote(t.Context(), w, cfg.KeyID, endpoint); err != nil {
+		t.Fatal("configure wrapped-key diagnostic test")
+	}
+	blob, err := w.Encrypt(t.Context(), []byte("synthetic fixture"))
+	if err != nil {
+		t.Fatal("encrypt wrapped-key diagnostic fixture")
+	}
+	key := blob.GetKeyInfo().GetWrappedKey()
+	key[len(key)-1] ^= 1
+	got, err := w.Decrypt(t.Context(), blob)
+	defer clear(got)
+	if len(got) != 0 || err == nil || !strings.Contains(err.Error(), "HTTP 400 (#/crypto/invalid-ciphertext)") ||
+		strings.Contains(err.Error(), "Invalid ciphertext") {
+		t.Fatal("tampered wrapped key must return only the HTTP status and problem type")
+	}
+}

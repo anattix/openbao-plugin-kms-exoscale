@@ -17,7 +17,7 @@ func TestSealRoleProbe(t *testing.T) {
 	case "restricted", "broad":
 		broad := os.Getenv("EXOSCALEKMS_TEST_SEAL_ROLE") == "broad"
 		cfg := testkms.Start(t, func(w http.ResponseWriter, _ *http.Request, op string) bool {
-			if !broad && (op == "generate-data-key" || op == "schedule-deletion" || op == "disable") {
+			if !broad && op == "generate-data-key" {
 				w.WriteHeader(http.StatusForbidden)
 				return true
 			}
@@ -29,13 +29,12 @@ func TestSealRoleProbe(t *testing.T) {
 	for _, role := range []string{"restricted", "broad"} {
 		t.Run(role, func(t *testing.T) {
 			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run", "^TestSealRoleProbe$")
-			cmd.Env = append(os.Environ(), "EXOSCALEKMS_TEST_SEAL_ROLE="+role,
-				"EXOSCALEKMS_LIVE_DISPOSABLE=1", "EXOSCALEKMS_LIVE_OTHER_KEY_ID=")
+			cmd.Env = append(os.Environ(), "EXOSCALEKMS_TEST_SEAL_ROLE="+role)
 			data, err := cmd.CombinedOutput()
 			if role == "restricted" && err != nil {
 				t.Fatalf("restricted seal role did not pass the probe: %v\n%s", err, data)
 			}
-			if role == "broad" && (err == nil || !bytes.Contains(data, []byte("seal generate-data-key: HTTP 200"))) {
+			if role == "broad" && (err == nil || !bytes.Contains(data, []byte("seal role must deny generate-data-key with HTTP 403"))) {
 				t.Fatalf("probe did not reject the over-broad role: %v\n%s", err, data)
 			}
 		})

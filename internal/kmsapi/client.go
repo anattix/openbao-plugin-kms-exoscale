@@ -26,21 +26,19 @@ var errInvalidResponse = errors.New("invalid Exoscale KMS response")
 type Client struct {
 	http                 *http.Client
 	base, apiKey, secret string
+	contextName          []byte
 }
 
 // StatusError reports the HTTP status without echoing the remote body.
 type StatusError struct {
-	Operation string
-	Code      int
-	Reason    string
+	Operation   string
+	Code        int
+	ProblemType string
 }
 
+// Error reports only the operation, HTTP status and an approved problem type.
 func (e *StatusError) Error() string {
-	status := fmt.Sprintf("Exoscale KMS %s: HTTP %d", e.Operation, e.Code)
-	if e.Reason != "" {
-		return status + " (" + e.Reason + ")"
-	}
-	return status
+	return fmt.Sprintf("Exoscale KMS %s: HTTP %d (%s)", e.Operation, e.Code, SafeProblemType(e.ProblemType))
 }
 
 // New constructs a client with system TLS trust and an optional additional CA.
@@ -82,16 +80,18 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 			Timeout:       cfg.Timeout,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		base:   "https://api-" + cfg.Zone + ".exoscale.com/v2/kms-key/",
-		apiKey: cfg.APIKey,
-		secret: cfg.APISecret,
+		base:        "https://api-" + cfg.Zone + ".exoscale.com/v2/kms-key/",
+		apiKey:      cfg.APIKey,
+		secret:      cfg.APISecret,
+		contextName: []byte(cfg.EncryptionContext),
 	}, nil
 }
 
 type request struct {
-	Plaintext  []byte `json:"plaintext,omitempty"`
-	Ciphertext []byte `json:"ciphertext,omitempty"`
-	KeySpec    string `json:"key-spec,omitempty"`
+	Plaintext         []byte `json:"plaintext,omitempty"`
+	Ciphertext        []byte `json:"ciphertext,omitempty"`
+	KeySpec           string `json:"key-spec,omitempty"`
+	EncryptionContext []byte `json:"encryption-context,omitempty"`
 }
 
 type response struct {
@@ -148,6 +148,7 @@ func validCiphertext(data []byte) bool {
 
 func (c *Client) crypto(ctx context.Context, id, operation string, in request) (response, error) {
 	var out response
+	in.EncryptionContext = c.contextName
 	body, err := json.Marshal(in)
 	if err != nil {
 		return out, errors.New("cannot encode KMS request")
@@ -213,7 +214,7 @@ func (c *Client) attempt(ctx context.Context, id, operation string, body []byte)
 	}
 	defer resp.Body.Close() // Response body is read below; Close adds no result data.
 	if resp.StatusCode != http.StatusOK {
-		return nil, transientStatus(resp.StatusCode), &StatusError{Operation: operation, Code: resp.StatusCode, Reason: problemDetails(resp.Body)}
+		return nil, transientStatus(resp.StatusCode), &StatusError{Operation: operation, Code: resp.StatusCode, ProblemType: problemDetails(resp.Body)}
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
 	if err != nil || len(data) > maxResponse {
@@ -232,27 +233,25 @@ func problemDetails(body io.Reader) string {
 	raw, err := io.ReadAll(io.LimitReader(body, maxProblem+1))
 	defer clear(raw)
 	var problem struct {
-		Title string `json:"title"`
+		Type string `json:"type"`
 	}
 	if err != nil || len(raw) > maxProblem || json.Unmarshal(raw, &problem) != nil {
-		return ""
+		return SafeProblemType("")
 	}
-	return ProblemReason(problem.Title)
+	return SafeProblemType(problem.Type)
 }
 
-// ProblemReason converts a recognized Problem Details title into fixed text.
-func ProblemReason(title string) string {
-	switch title {
-	case "Key Not Found":
-		return "key not found"
-	case "Key is Disabled":
-		return "key disabled"
-	case "Invalid Usage":
-		return "invalid key usage"
-	case "Key is Pending Deletion":
-		return "key pending deletion"
+// SafeProblemType returns a known KMS problem URI or a neutral label.
+func SafeProblemType(problemType string) string {
+	switch problemType {
+	case "#/crypto/invalid-ciphertext", "#/kms-key/key-disabled",
+		"#/kms-key/multi-zone/key-is-not-multi-zone", "#/kms-key/not-found",
+		"#/http-problem-types/request-invalid-parameters",
+		"#/kms-key/manual-rotation-limit",
+		"#/kms-key/multi-zone/operation-not-allowed-on-a-replica":
+		return problemType
 	default:
-		return ""
+		return "unclassified"
 	}
 }
 

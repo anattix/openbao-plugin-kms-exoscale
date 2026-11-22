@@ -48,8 +48,8 @@ func resolveConfig(ctx context.Context, options ...wrapping.Option) (map[string]
 		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(endpoint, "#") {
 		return nil, errors.New("Exoscale KMS endpoint must be HTTPS without credentials, query or fragment")
 	}
-	if u.EscapedPath() != "/v2" && u.EscapedPath() != "/v2/" {
-		return nil, errors.New("Exoscale KMS endpoint path must be /v2")
+	if u.EscapedPath() != "/v2" {
+		return nil, errors.New("Exoscale KMS endpoint path must be /v2 without a trailing slash")
 	}
 	apiKey := fromEnv(opts, upstream.EnvExoscaleApiKey, "")
 	secret := fromEnv(opts, upstream.EnvExoscaleApiSecret, "")
@@ -61,7 +61,7 @@ func resolveConfig(ctx context.Context, options ...wrapping.Option) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	return map[string]string{"key_id": key, "zone": zone, "endpoint": strings.TrimRight(endpoint, "/"),
+	return map[string]string{"key_id": key, "zone": zone, "endpoint": endpoint,
 		"api_key": apiKey, "api_secret": secret}, nil
 }
 
@@ -75,17 +75,63 @@ func fromEnv(opts *wrapping.Options, name, fallback string) string {
 }
 
 func credential(ctx context.Context, opts *wrapping.Options, name, envValue string) (string, error) {
+	ref := opts.WithConfigMap[name]
 	if envValue != "" {
+		// The reference must resolve, but its content is unused.
+		if err := checkOverriddenReference(ctx, ref); err != nil {
+			return "", err
+		}
 		return envValue, nil
 	}
-	ref := opts.WithConfigMap[name]
-	if path, ok := strings.CutPrefix(ref, "file://"); ok && filepath.IsAbs(path) {
-		return kmsapi.ReadExactCredentialFile(ctx, path)
+	value, err := credentialReference(ctx, ref, opts.WithDisallowEnvVars)
+	if err != nil {
+		return "", err
 	}
-	if env, ok := strings.CutPrefix(ref, "env://"); ok && !opts.WithDisallowEnvVars {
-		if value := os.Getenv(env); value != "" {
-			return value, nil
+	if value == "" {
+		return "", errors.New("configure Exoscale credentials in the environment or with file:// paths")
+	}
+	return value, nil
+}
+
+func checkOverriddenReference(ctx context.Context, ref string) error {
+	if path, ok := strings.CutPrefix(ref, "file://"); ok {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !filepath.IsAbs(path) {
+			return errors.New("Exoscale credential file path must be absolute")
+		}
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Size() > 8192 {
+			return errors.New("cannot resolve Exoscale credential file reference")
+		}
+		f, err := os.Open(path)
+		if err != nil || f.Close() != nil {
+			return errors.New("cannot resolve Exoscale credential file reference")
 		}
 	}
-	return "", errors.New("configure Exoscale credentials in the environment or with file:// paths")
+	if name, ok := strings.CutPrefix(ref, "env://"); ok {
+		if _, set := os.LookupEnv(name); !set {
+			return errors.New("cannot resolve Exoscale credential environment reference")
+		}
+	}
+	return nil
+}
+
+func credentialReference(ctx context.Context, ref string, disallowEnv bool) (string, error) {
+	if path, ok := strings.CutPrefix(ref, "file://"); ok {
+		if !filepath.IsAbs(path) {
+			return "", errors.New("Exoscale credential file path must be absolute")
+		}
+		return kmsapi.ReadExactCredentialFile(ctx, path)
+	}
+	if name, ok := strings.CutPrefix(ref, "env://"); ok {
+		if !disallowEnv {
+			if value := os.Getenv(name); value != "" {
+				return value, nil
+			}
+		}
+		return "", errors.New("cannot resolve Exoscale credential environment reference")
+	}
+	return "", nil
 }

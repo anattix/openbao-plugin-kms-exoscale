@@ -74,9 +74,9 @@ func TestFakeRejectsUnknownDisabledAndBadSignature(t *testing.T) {
 		want      int
 		reason    string
 	}{
-		{"unknown", "44444444-4444-4444-8444-444444444444", false, http.StatusBadRequest, "key not found"},
-		{"disabled", testkms.DisabledID, false, http.StatusBadRequest, "key disabled"},
-		{"wrong signature", testkms.KeyID, true, http.StatusUnauthorized, ""},
+		{"unknown", "44444444-4444-4444-8444-444444444444", false, http.StatusBadRequest, "#/kms-key/not-found"},
+		{"disabled", testkms.DisabledID, false, http.StatusBadRequest, "#/kms-key/key-disabled"},
+		{"wrong signature", testkms.KeyID, true, http.StatusForbidden, "unclassified"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testkms.Start(t, nil)
@@ -89,7 +89,7 @@ func TestFakeRejectsUnknownDisabledAndBadSignature(t *testing.T) {
 			}
 			_, err = c.Encrypt(t.Context(), tc.id, make([]byte, kmsapi.KeySize))
 			var status *kmsapi.StatusError
-			if !errors.As(err, &status) || status.Code != tc.want || status.Reason != tc.reason {
+			if !errors.As(err, &status) || status.Code != tc.want || status.ProblemType != tc.reason {
 				t.Fatalf("unexpected safe status: %v", err)
 			}
 		})
@@ -110,7 +110,7 @@ func TestLifecycleCallIsNotRetried(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = kmsapi.ProbeLifecycle(t.Context(), c, cfg.KeyID, "rotate")
-	if err == nil || !strings.HasSuffix(err.Error(), "HTTP 503") || calls.Load() != 1 {
+	if err == nil || !strings.HasSuffix(err.Error(), "HTTP 503 (unclassified)") || calls.Load() != 1 {
 		t.Fatal("rotate must report failure after one attempt")
 	}
 }
@@ -169,6 +169,41 @@ func TestReplyGuards(t *testing.T) {
 			clear(plain)
 			if err == nil || plain != nil || wrapped != nil {
 				t.Fatal("invalid generate-data-key answer yielded key material")
+			}
+		})
+	}
+}
+
+func TestRemoteProblemTypeAllowlist(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"known type", `{"type":"#/crypto/invalid-ciphertext","title":"untrusted marker","detail":"untrusted marker"}`, "#/crypto/invalid-ciphertext"},
+		{"not found", `{"type":"#/kms-key/not-found","detail":"untrusted marker"}`, "#/kms-key/not-found"},
+		{"manual rotation limit", `{"type":"#/kms-key/manual-rotation-limit","detail":"untrusted marker"}`, "#/kms-key/manual-rotation-limit"},
+		{"replica operation", `{"type":"#/kms-key/multi-zone/operation-not-allowed-on-a-replica","title":"untrusted marker"}`, "#/kms-key/multi-zone/operation-not-allowed-on-a-replica"},
+		{"invalid parameters", `{"type":"#/http-problem-types/request-invalid-parameters","detail":"untrusted marker"}`, "#/http-problem-types/request-invalid-parameters"},
+		{"truncated type", `{"type":"#/http-problem-types/request-invalid-paramete"}`, "unclassified"},
+		{"extra suffix", `{"type":"#/kms-key/not-found/untrusted"}`, "unclassified"},
+		{"unknown type despite known title", `{"type":"untrusted marker","title":"Key is disabled","detail":"untrusted marker"}`, "unclassified"},
+		{"non problem body", "untrusted marker", "unclassified"},
+		{"oversized error", strings.Repeat("untrusted marker", 1024), "unclassified"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testkms.Start(t, func(w http.ResponseWriter, _ *http.Request, _ string) bool {
+				http.Error(w, tc.body, http.StatusBadRequest)
+				return true
+			})
+			c, err := kmsapi.New(t.Context(), cfg)
+			if err != nil {
+				t.Fatal("configure problem diagnostic test")
+			}
+			got, _, err := c.GenerateDataKey(t.Context(), cfg.KeyID)
+			defer clear(got)
+			var status *kmsapi.StatusError
+			if !errors.As(err, &status) || status.ProblemType != tc.want ||
+				err.Error() != "Exoscale KMS generate-data-key: HTTP 400 ("+tc.want+")" || len(got) != 0 {
+				t.Fatal("error must contain only the HTTP status and approved type or neutral label")
 			}
 		})
 	}

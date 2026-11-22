@@ -6,15 +6,11 @@ package testkms
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -68,31 +64,91 @@ func StartEndpoint(t *testing.T, hook Hook) (kmsapi.Config, string) {
 	return cfg, srv.URL + "/v2"
 }
 
-// StartWithRotation runs a fake whose active key can be rotated through its HTTPS route.
-func StartWithRotation(t *testing.T) (kmsapi.Config, func()) {
+// StartWithRotation runs a fake with an explicit HTTPS endpoint and a rotatable key.
+func StartWithRotation(t *testing.T) (kmsapi.Config, string, func()) {
 	t.Helper()
 	cfg, srv := start(t, nil)
-	return cfg, func() {
-		t.Helper()
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL+"/v2/kms-key/"+cfg.KeyID+"/rotate", nil)
-		if err != nil || egoscale.SignHTTPRequest(req, fixtureKey, fixtureSecret, time.Now().Add(time.Minute)) != nil {
-			t.Fatal("prepare fake rotation request")
-		}
-		resp, err := srv.Client().Do(req)
-		if err != nil {
-			t.Fatal("send fake rotation request")
-		}
-		defer resp.Body.Close() // No response data used.
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("fake rotation HTTP %d", resp.StatusCode)
-		}
+	cfg.KeyID = createRotationFixture(t, cfg, srv, false)
+	return cfg, srv.URL + "/v2", func() { rotateFixtureKey(t, cfg, srv) }
+}
+
+func createRotationFixture(t *testing.T, cfg kmsapi.Config, srv *httptest.Server, multiZone bool) string {
+	t.Helper()
+	body := strings.NewReader(fmt.Sprintf(`{"name":"rotation-fixture","usage":"encrypt-decrypt","multi-zone":%t}`, multiZone))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL+"/v2/kms-key", body)
+	if err != nil || egoscale.SignHTTPRequest(req, cfg.APIKey, cfg.APISecret, time.Now().Add(time.Minute)) != nil {
+		t.Fatal("prepare fake key creation")
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal("send fake key creation")
+	}
+	defer resp.Body.Close() // The fake is local and closes at test cleanup.
+	var meta keyMetadata
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&meta) != nil || !kmsapi.ValidKeyID(meta.ID) || meta.ID == cfg.KeyID {
+		t.Fatal("create a separate fake rotation key")
+	}
+	return meta.ID
+}
+
+func rotateFixtureKey(t *testing.T, cfg kmsapi.Config, srv *httptest.Server) {
+	t.Helper()
+	rotationFixturePost(t, cfg, srv, "rotate", nil)
+}
+
+func replicateRotationFixture(t *testing.T, cfg kmsapi.Config, srv *httptest.Server) {
+	t.Helper()
+	rotationFixturePost(t, cfg, srv, "replicate", strings.NewReader(`{"zone":"`+ReplicaZone+`"}`))
+}
+
+func rotationFixturePost(t *testing.T, cfg kmsapi.Config, srv *httptest.Server, operation string, body io.Reader) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL+"/v2/kms-key/"+cfg.KeyID+"/"+operation, body)
+	if err != nil || egoscale.SignHTTPRequest(req, cfg.APIKey, cfg.APISecret, time.Now().Add(time.Minute)) != nil {
+		t.Fatalf("prepare fake %s request", operation)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("send fake %s request", operation)
+	}
+	if err := resp.Body.Close(); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("fake %s did not return HTTP 200 (status %d)", operation, resp.StatusCode)
 	}
 }
 
 func start(t *testing.T, hook Hook) (kmsapi.Config, *httptest.Server) {
 	t.Helper()
-	fake := server{hook: hook, versions: make(map[string]uint32)}
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(fake.handle))
+	return startWithResponseHook(t, hook, nil)
+}
+
+// StartWithOverheadSkew runs a fake whose ciphertexts stay valid but are extra
+// bytes longer than the measured overhead, so that length assertions must fail.
+func StartWithOverheadSkew(t *testing.T, extra int) (kmsapi.Config, string) {
+	t.Helper()
+	cfg, srv := startFake(t, nil, nil, extra)
+	return cfg, srv.URL + "/v2"
+}
+
+func startWithResponseHook(t *testing.T, hook Hook, responseHook func(http.Handler, http.ResponseWriter, *http.Request)) (kmsapi.Config, *httptest.Server) {
+	t.Helper()
+	return startFake(t, hook, responseHook, 0)
+}
+
+func startFake(t *testing.T, hook Hook, responseHook func(http.Handler, http.ResponseWriter, *http.Request), extra int) (kmsapi.Config, *httptest.Server) {
+	t.Helper()
+	fake := server{hook: hook, extraPadding: extra, keys: map[string]*fakeKey{
+		KeyID:      {status: "enabled", multiZone: true, version: 1, replica: ReplicaZone},
+		OtherID:    {status: "enabled", version: 1},
+		DisabledID: {status: "disabled", version: 1},
+	}}
+	handler := http.HandlerFunc(fake.handle)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if responseHook == nil {
+			handler.ServeHTTP(w, r)
+			return
+		}
+		responseHook(handler, w, r)
+	}))
 	cert, certPEM := makeCert(t)
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
 	srv.StartTLS()
@@ -142,98 +198,94 @@ func makeCert(t *testing.T) (tls.Certificate, []byte) {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv}, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
-type message struct {
-	Plaintext  []byte `json:"plaintext,omitempty"`
-	Ciphertext []byte `json:"ciphertext,omitempty"`
-	KeySpec    string `json:"key-spec,omitempty"`
-}
-
 type server struct {
-	hook     Hook
-	mu       sync.Mutex
-	versions map[string]uint32
+	hook Hook
+	mu   sync.Mutex
+	keys map[string]*fakeKey
+	// extraPadding skews every ciphertext length; only negative tests set it.
+	extraPadding int
 }
 
 func (s *server) handle(w http.ResponseWriter, r *http.Request) {
 	path := strings.Split(r.URL.Path, "/")
-	if len(path) < 4 || path[1] != "v2" || path[2] != "kms-key" {
-		problem(w, http.StatusBadRequest, "Invalid Request")
+	if len(path) < 3 || path[1] != "v2" || path[2] != "kms-key" {
+		plainError(w, 400)
 		return
 	}
-	id, op := path[3], "get"
+	id, op := "", ""
 	switch {
+	case len(path) == 3 && r.Method == http.MethodPost:
+		op = "create"
+	case len(path) == 3 && r.Method == http.MethodGet:
+		op = "list"
 	case len(path) == 4 && r.Method == http.MethodGet:
-	case len(path) == 5 && r.Method == http.MethodPost:
-		op = path[4]
+		id, op = path[3], "get"
+	case len(path) == 5 && r.Method == http.MethodPost && path[4] != "":
+		id, op = path[3], path[4]
+	case len(path) == 5 && r.Method == http.MethodGet && path[4] == "list-key-rotations":
+		id, op = path[3], path[4]
 	default:
-		problem(w, http.StatusBadRequest, "Invalid Request")
+		plainError(w, 400)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, (64<<10)+1))
+	const limit = 2 << 20
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	defer clear(body)
-	if err != nil || len(body) > 64<<10 {
-		problem(w, http.StatusBadRequest, "Invalid Request")
+	if err != nil || len(body) > limit {
+		plainError(w, 400)
 		return
 	}
-	if !validSignature(r, body) {
-		problem(w, http.StatusUnauthorized, "Unauthorized")
-		return
-	}
-	if s.hook != nil && s.hook(w, r, op) {
-		return
-	}
-	if id == DisabledID && op != "get" {
-		problem(w, http.StatusBadRequest, "Key is Disabled")
-		return
-	}
-	if id != KeyID && id != OtherID && id != DisabledID {
-		problem(w, http.StatusBadRequest, "Key Not Found")
-		return
-	}
-	if op == "get" {
-		status := "enabled"
-		if id == DisabledID {
-			status = "disabled"
+	if !validSignature(r, body, fixtureKey, fixtureSecret) {
+		message := "Invalid key or request signature"
+		if strings.Contains(r.Header.Get("Authorization"), "credential="+fixtureKey+",") {
+			message = "Invalid request signature"
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(struct {
-			ID     string `json:"id"`
-			Status string `json:"status"`
-		}{id, status}) // The only write error is a disconnected test client.
+		w.Header().Set("Content-Type", refusalJSON)
+		wireJSON(w, http.StatusForbidden, struct {
+			Message string `json:"message"`
+		}{message})
 		return
+	}
+	if s.hook != nil {
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if s.hook(w, r, op) {
+			return
+		}
 	}
 	s.mu.Lock()
-	if op == "rotate" {
-		s.versions[id]++
+	defer s.mu.Unlock()
+	if id == "" && (op == "create" || op == "list") {
+		s.collection(w, op, body)
+		return
 	}
-	version := s.versions[id]
-	s.mu.Unlock()
-	if op == "rotate" {
-		w.Header().Set("Content-Type", "application/json")
-		if _, err := io.WriteString(w, `{"rotation":{}}`); err != nil {
-			return // The client disconnected.
+	if !kmsapi.ValidKeyID(id) {
+		type fieldError struct {
+			Message string   `json:"message"`
+			Path    string   `json:"path"`
+			In      []string `json:"in"`
 		}
+		w.Header().Set("Content-Type", refusalJSON)
+		wireJSON(w, 400, struct {
+			Message string       `json:"message"`
+			Errors  []fieldError `json:"errors"`
+		}{"Invalid value `not-a-uuid` at 'id': should be a UUID", []fieldError{{"should be a UUID", "id", []string{"id"}}}})
 		return
 	}
-	var in message
-	if json.Unmarshal(body, &in) != nil {
-		clear(in.Plaintext)
-		problem(w, http.StatusBadRequest, "Invalid Request")
+	key := s.keys[id]
+	atReplica := r.Host == "api-"+ReplicaZone+".exoscale.com"
+	if key == nil || (atReplica && key.replica != ReplicaZone) {
+		problem(w, 400, "#/kms-key/not-found", "Key not found", "requested key not found")
 		return
 	}
-	out, err := crypt(id, version, op, in)
-	if err != nil {
-		problem(w, http.StatusBadRequest, "Invalid Request")
-		return
-	}
-	defer clear(out.Plaintext)
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(out); err != nil {
-		return // The client disconnected.
+	switch op {
+	case "encrypt", "decrypt", "generate-data-key", "re-encrypt":
+		s.crypt(w, id, op, key, body)
+	default:
+		s.lifecycle(w, id, op, key, body, atReplica)
 	}
 }
 
-func validSignature(r *http.Request, body []byte) bool {
+func validSignature(r *http.Request, body []byte, key, secret string) bool {
 	actual := r.Header.Get("Authorization")
 	_, suffix, ok := strings.Cut(actual, ",expires=")
 	value, _, complete := strings.Cut(suffix, ",")
@@ -245,53 +297,6 @@ func validSignature(r *http.Request, body []byte) bool {
 	}
 	check := r.Clone(r.Context())
 	check.Body = io.NopCloser(bytes.NewReader(body))
-	return egoscale.SignHTTPRequest(check, fixtureKey, fixtureSecret, exp) == nil &&
+	return egoscale.SignHTTPRequest(check, key, secret, exp) == nil &&
 		hmac.Equal([]byte(actual), []byte(check.Header.Get("Authorization")))
-}
-
-func problem(w http.ResponseWriter, status int, title string) {
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(struct {
-		Type   string `json:"type"`
-		Title  string `json:"title"`
-		Status int    `json:"status"`
-	}{"about:blank", title, status}); err != nil {
-		return // The client disconnected.
-	}
-}
-
-func crypt(id string, version uint32, op string, in message) (message, error) {
-	defer clear(in.Plaintext)
-	if op == "decrypt" {
-		if len(in.Ciphertext) <= 4 || binary.BigEndian.Uint32(in.Ciphertext) > version {
-			return message{}, fmt.Errorf("unknown key version")
-		}
-		version = binary.BigEndian.Uint32(in.Ciphertext)
-	}
-	k := sha256.Sum256([]byte(fmt.Sprintf("test-only/%s/%d", id, version)))
-	block, err := aes.NewCipher(k[:])
-	if err != nil {
-		return message{}, err
-	}
-	gcm, err := cipher.NewGCMWithRandomNonce(block)
-	if err != nil {
-		return message{}, err
-	}
-	prefix := binary.BigEndian.AppendUint32(nil, version)
-	switch {
-	case op == "encrypt" && len(in.Plaintext) > 0:
-		return message{Ciphertext: gcm.Seal(prefix, nil, in.Plaintext, nil)}, nil
-	case op == "decrypt":
-		raw, err := gcm.Open(nil, nil, in.Ciphertext[4:], nil)
-		return message{Plaintext: raw}, err
-	case op == "generate-data-key" && in.KeySpec == "AES-256":
-		raw := make([]byte, kmsapi.KeySize)
-		if _, err := rand.Read(raw); err != nil {
-			return message{}, err
-		}
-		return message{Plaintext: raw, Ciphertext: gcm.Seal(prefix, nil, raw, nil)}, nil
-	default:
-		return message{}, fmt.Errorf("invalid KMS operation request")
-	}
 }

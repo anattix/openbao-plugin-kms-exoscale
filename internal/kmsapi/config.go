@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -32,6 +34,8 @@ type Config struct {
 	KeyID, Zone       string
 	APIKey, APISecret string
 	CAFile            string
+	// EncryptionContext binds wrapped data keys to a caller-chosen nonsecret name.
+	EncryptionContext string
 	Timeout           time.Duration
 	AllowedKeyIDs     []string
 	// DialContext permits local TLS integration tests without replacing URL or trust checks.
@@ -50,13 +54,18 @@ func Resolve(ctx context.Context, settings map[string]string, keyID string, disa
 		keyID = setting(settings, "key_id", "EXOSCALEKMS_KEY_ID", disallowEnv)
 	}
 	cfg := Config{
-		KeyID:   strings.ToLower(keyID),
-		Zone:    setting(settings, "zone", "EXOSCALE_ZONE", disallowEnv),
-		CAFile:  setting(settings, "ca_file", "EXOSCALEKMS_CA_FILE", disallowEnv),
-		Timeout: 3 * time.Second,
+		KeyID:             strings.ToLower(keyID),
+		Zone:              setting(settings, "zone", "EXOSCALE_ZONE", disallowEnv),
+		CAFile:            setting(settings, "ca_file", "EXOSCALEKMS_CA_FILE", disallowEnv),
+		EncryptionContext: setting(settings, "encryption_context", "EXOSCALEKMS_ENCRYPTION_CONTEXT", disallowEnv),
+		Timeout:           3 * time.Second,
 	}
 	if !ValidKeyID(cfg.KeyID) || !ValidZone(cfg.Zone) {
 		return Config{}, errors.New("configure a KMS key UUID and an Exoscale zone")
+	}
+	if value := cfg.EncryptionContext; len(value) > 1024 ||
+		!utf8.ValidString(value) || strings.ContainsFunc(value, unicode.IsControl) {
+		return Config{}, errors.New("EXOSCALEKMS_ENCRYPTION_CONTEXT must be at most 1024 bytes of printable UTF-8")
 	}
 	if err := resolveLimits(settings, disallowEnv, &cfg); err != nil {
 		return Config{}, err

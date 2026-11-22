@@ -27,7 +27,8 @@ func TestConfigRouting(t *testing.T) {
 	}{
 		{"Geneva", "ch-gva-2", "", "", "https://api-ch-gva-2.exoscale.com/v2", ""},
 		{"ch-dk-2", "ch-dk-2", "", "", "https://api-ch-dk-2.exoscale.com/v2", ""},
-		{"explicit HTTPS", "", "https://kms.example.test:8443/v2/", "", "https://kms.example.test:8443/v2", ""},
+		{"explicit HTTPS", "", "https://kms.example.test:8443/v2", "", "https://kms.example.test:8443/v2", ""},
+		{"trailing slash", "", "https://kms.example.test/v2/", "", "", "without a trailing slash"},
 		{"extra endpoint path", "", "https://kms.example.test/v2/extra", "", "", "endpoint path must be /v2"},
 		{"invalid zone and explicit endpoint", "not-a-zone", "https://kms.example.test/v2", "", "", "valid Exoscale KMS zone"},
 		{"invalid zone", "ch-gva-2.example.test/", "", "", "", "valid Exoscale KMS zone"},
@@ -80,6 +81,7 @@ func TestConfigCredentialSources(t *testing.T) {
 		{"file under disallow env", "file://" + path, "file-fixture", true},
 		{"environment takes precedence", "file://" + path, "env-fixture", false},
 		{"missing file", "file://" + path + "-missing", "", true},
+		{"environment does not mask a missing file", "file://" + path + "-missing", "", false},
 		{"file with trailing newline", "file://" + newline, "", true},
 		{"relative file", "file://relative", "", true},
 		{"literal", "configured-fixture", "", true},

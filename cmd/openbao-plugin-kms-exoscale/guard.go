@@ -114,7 +114,13 @@ func publicError(ctx context.Context, op string, err error) error {
 	}
 	var status *exoscale.APIError
 	if errors.As(err, &status) {
-		return &kmsapi.StatusError{Operation: op, Code: status.StatusCode, Reason: kmsapi.ProblemReason(status.Title)}
+		safe := &kmsapi.StatusError{Operation: op, Code: status.StatusCode}
+		// The generated KMS endpoints decode their documented 400 schema.
+		// Other statuses need the SDK to expose a generic Problem Details type.
+		if problem, ok := status.Response.(*exoscale.ErrorResponse); ok && problem != nil {
+			safe.ProblemType = kmsapi.SafeProblemType(problem.Type)
+		}
+		return safe
 	}
 	return fmt.Errorf("Exoscale KMS %s: request failed or invalid response", op)
 }

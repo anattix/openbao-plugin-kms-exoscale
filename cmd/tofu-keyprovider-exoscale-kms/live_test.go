@@ -11,50 +11,66 @@ import (
 	"os"
 	"testing"
 
+	"github.com/anattix/openbao-plugin-kms-exoscale/internal/conformance"
 	"github.com/anattix/openbao-plugin-kms-exoscale/internal/kmsapi"
 )
 
 func TestLiveProvider(t *testing.T) {
-	if os.Getenv("EXOSCALEKMS_LIVE") != "1" || os.Getenv("EXOSCALEKMS_KEY_ID") == "" ||
-		(os.Getenv("EXOSCALE_API_KEY") == "" && os.Getenv("EXOSCALEKMS_API_KEY_FILE") == "") ||
-		(os.Getenv("EXOSCALE_API_SECRET") == "" && os.Getenv("EXOSCALEKMS_API_SECRET_FILE") == "") {
-		t.Skip("requires explicit live opt-in, a KMS key ID and Exoscale credentials")
+	cfg := conformance.LiveConfig(t)
+	t.Run("provider_roundtrip", func(t *testing.T) {
+		first, _ := providerRoundTrip(t, cfg)
+		t.Logf("KMS provider_roundtrip key_bytes=32 wrapped_bytes=%d", len(first.Meta.ExternalData.WrappedKey))
+	})
+	t.Run("provider_context", func(t *testing.T) {
+		providerContextCases(t, cfg, "")
+		t.Log("KMS provider_context same=200 absent=400 different=400 added=400")
+	})
+	if os.Getenv("EXOSCALEKMS_LIVE_LEAST_PRIVILEGE") == "1" {
+		t.Run("least_privilege", func(t *testing.T) {
+			client, _, err := providerLoad(t, cfg)(t.Context())
+			if err != nil {
+				t.Fatal("configure state role probe")
+			}
+			_, err = client.Encrypt(t.Context(), cfg.KeyID, make([]byte, kmsapi.KeySize))
+			var status *kmsapi.StatusError
+			if !errors.As(err, &status) || status.Code != http.StatusForbidden {
+				t.Fatal("state role must deny encrypt with HTTP 403")
+			}
+			t.Log("KMS provider_least_privilege generate=200 decrypt=200 encrypt=403")
+		})
 	}
-	ctx := t.Context()
-	cfg, err := kmsapi.Resolve(ctx, nil, "", false)
+}
+
+func providerLoad(t *testing.T, cfg kmsapi.Config) func(context.Context) (*kmsapi.Client, kmsapi.Config, error) {
+	t.Helper()
+	client, err := kmsapi.New(t.Context(), cfg)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("configure provider probe")
 	}
-	client, err := kmsapi.New(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	load := func(context.Context) (*kmsapi.Client, kmsapi.Config, error) { return client, cfg, nil }
+	return func(context.Context) (*kmsapi.Client, kmsapi.Config, error) { return client, cfg, nil }
+}
+
+func providerRoundTrip(t *testing.T, cfg kmsapi.Config) (output, []byte) {
+	t.Helper()
+	load := providerLoad(t, cfg)
 	first := exchange(t, []byte("null"), load)
-	defer clear(first.Keys.Encryption)
-	metadata, err := json.Marshal(first.Meta)
+	t.Cleanup(func() { clear(first.Keys.Encryption) })
+	meta, err := json.Marshal(first.Meta)
 	if err != nil {
-		t.Fatal("encode live provider metadata")
+		t.Fatal("encode provider metadata")
 	}
-	second := exchange(t, metadata, load)
+	second := exchange(t, meta, load)
 	defer clear(second.Keys.Encryption)
 	defer clear(second.Keys.Decryption)
-	if !bytes.Equal(first.Keys.Encryption, second.Keys.Decryption) ||
-		bytes.Equal(first.Keys.Encryption, second.Keys.Encryption) {
-		t.Fatal("provider did not recover the old key and derive a fresh state key")
+	if !conformance.MeasuredCiphertextLength(kmsapi.KeySize, len(first.Meta.ExternalData.WrappedKey)) {
+		t.Error("first provider wrap is outside the measured lengths")
 	}
-	t.Logf("state protocol generated and recovered a %d-byte data key, wrapped size %d bytes",
-		len(first.Keys.Encryption), len(first.Meta.ExternalData.WrappedKey))
-	// The role check needs a credential bound to the state role; a broader
-	// test credential is allowed to encrypt, so the check is a separate opt-in.
-	if os.Getenv("EXOSCALEKMS_LIVE_LEAST_PRIVILEGE") != "1" {
-		t.Log("state role denial unmeasured; set EXOSCALEKMS_LIVE_LEAST_PRIVILEGE=1 with a credential bound to the state role")
-		return
+	if !conformance.MeasuredCiphertextLength(kmsapi.KeySize, len(second.Meta.ExternalData.WrappedKey)) {
+		t.Error("second provider wrap is outside the measured lengths")
 	}
-	_, err = client.Encrypt(ctx, cfg.KeyID, make([]byte, kmsapi.KeySize))
-	var status *kmsapi.StatusError
-	if !errors.As(err, &status) || status.Code != http.StatusForbidden {
-		t.Fatalf("expected the state role to deny encrypt with HTTP 403: %v", err)
+	if t.Failed() || len(first.Keys.Encryption) != kmsapi.KeySize ||
+		!bytes.Equal(first.Keys.Encryption, second.Keys.Decryption) || bytes.Equal(first.Keys.Encryption, second.Keys.Encryption) {
+		t.Fatal("provider must read the old state key and generate a fresh key with the measured lengths")
 	}
-	t.Log("seal encrypt denied with HTTP 403")
+	return first, meta
 }
