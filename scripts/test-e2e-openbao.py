@@ -122,6 +122,12 @@ class RehearsalTests(unittest.TestCase):
             (b'Error configuring seal "exoscale": Exoscale KMS configure: '
              b'HTTP 400 (#/kms-key/not-found)\n',
              "Exoscale KMS configure: HTTP 400 (#/kms-key/not-found)", False),
+            (b'Error configuring seal "exoscale": Exoscale KMS configure: '
+             b'HTTP 400 (#/kms-key/manual-rotation-limit) do-not-print\n',
+             "Exoscale KMS configure: HTTP 400 (#/kms-key/manual-rotation-limit)", False),
+            (b'Error configuring seal "exoscale": Exoscale KMS configure: '
+             b'HTTP 400 (#/kms-key/multi-zone/operation-not-allowed-on-a-replica) do-not-print\n',
+             "Exoscale KMS configure: HTTP 400 (#/kms-key/multi-zone/operation-not-allowed-on-a-replica)", False),
             (b'Error configuring seal "exoscale": Exoscale KMS configure: HTTP 403\n',
              "Exoscale KMS configure: HTTP 403", True),
             (b'Error configuring seal "exoscale": Exoscale KMS configure: HTTP 403 (unclassified)\n',

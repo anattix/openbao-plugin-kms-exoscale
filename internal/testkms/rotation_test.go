@@ -155,24 +155,38 @@ func TestRotationLimitLengthRejectsSkew(t *testing.T) {
 }
 
 // TestRotationRequiresExactRefusals supplies each refusal with the correct
-// HTTP status and title but an incorrect type, with no state change.
+// HTTP status and either an incorrect type with the measured title, or the
+// measured type with an incorrect title, with no state change.
 func TestRotationRequiresExactRefusals(t *testing.T) {
 	const child = "EXOSCALEKMS_TEST_ROTATION_REFUSAL_CHILD"
-	if scenario := os.Getenv(child); scenario != "" {
+	if value := os.Getenv(child); value != "" {
+		scenario, field, _ := strings.Cut(value, ":")
+		answer := func(w http.ResponseWriter, typ, title string) {
+			if field == "title" {
+				title = "Unexpected title"
+			} else {
+				typ = "#/test/unexpected"
+			}
+			problem(w, http.StatusBadRequest, typ, title, "")
+		}
 		var mu sync.Mutex
 		count := 0
 		cfg, srv := start(t, func(w http.ResponseWriter, r *http.Request, op string) bool {
 			mu.Lock()
 			defer mu.Unlock()
 			atReplica := r.Host == "api-"+ReplicaZone+".exoscale.com"
+			if atReplica && op == "encrypt" && scenario == "replica-cleanup" {
+				answer(w, "#/kms-key/key-disabled", "Key is disabled")
+				return true
+			}
 			if atReplica && op == scenario {
-				problem(w, http.StatusBadRequest, "#/test/unexpected", "Operation not allowed on replica", "")
+				answer(w, "#/kms-key/multi-zone/operation-not-allowed-on-a-replica", "Operation not allowed on replica")
 				return true
 			}
 			if scenario == "manual-limit" && op == "rotate" {
 				count++
 				if count == 11 {
-					problem(w, http.StatusBadRequest, "#/test/unexpected", "Maximum rotation limit exceeded", "")
+					answer(w, "#/kms-key/manual-rotation-limit", "Maximum rotation limit exceeded")
 					return true
 				}
 			}
@@ -188,7 +202,8 @@ func TestRotationRequiresExactRefusals(t *testing.T) {
 		probe.Run(t)
 		return
 	}
-	for _, scenario := range []string{"manual-limit", "rotate", "schedule-deletion"} {
+	for _, scenario := range []string{"manual-limit", "rotate", "schedule-deletion",
+		"manual-limit:title", "rotate:title", "schedule-deletion:title", "replica-cleanup:title"} {
 		t.Run(scenario, func(t *testing.T) {
 			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.v", "-test.run", "^TestRotationRequiresExactRefusals$")
 			cmd.Env = append(os.Environ(), child+"="+scenario)
@@ -196,7 +211,7 @@ func TestRotationRequiresExactRefusals(t *testing.T) {
 			var exit *exec.ExitError
 			if !errors.As(err, &exit) || exit.ExitCode() != 1 ||
 				!bytes.Contains(out, []byte("KMS problem type or title differs from the measurement")) {
-				t.Fatal("rotation suite accepted a refusal with the wrong problem type")
+				t.Fatal("rotation suite accepted a refusal with the wrong problem type or title")
 			}
 		})
 	}

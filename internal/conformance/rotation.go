@@ -138,6 +138,9 @@ func (p RotationProbe) checkManualLimit(t *testing.T, id string, old, plain []by
 
 func (p RotationProbe) replicate(t *testing.T, id string, before reply) {
 	t.Helper()
+	if !canMutateDisposable(p.ConfiguredKey, id) {
+		t.Fatal("replication refused for configured or invalid key")
+	}
 	// Submit once. After a missing reply, destination readback can confirm
 	// replication. A missing readback cannot establish it is safe to replay.
 	got, err := p.Origin.call(t.Context(), http.MethodPost, "/"+id+"/replicate", replicationBody(t, p.ReplicaZone))

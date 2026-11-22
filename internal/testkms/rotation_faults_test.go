@@ -20,16 +20,18 @@ import (
 // rotationFaults maps a misreported rotation fact to the assertion that must
 // reject it. Each fault touches only the key created by the probe.
 var rotationFaults = map[string]string{
-	"count_skipped":       "manual rotation did not increment material version and manual count once",
-	"automatic_history":   "manual rotation missing from rotation history",
-	"replica_unreadable":  "disposable replica did not become readable",
-	"replica_stale":       "replica did not report the rotated material version and manual count",
-	"limit_state":         "manual rotation limit changed the key state or counts",
-	"replica_delete_type": "KMS problem type or title differs from the measurement",
-	"created_version":     "new rotation key must have material version 1 and no manual rotations",
-	"created_zone_mode":   "created key has unexpected zone mode, state or usage",
-	"created_count":       "new rotation key must have material version 1 and no manual rotations",
-	"replica_not_pending": "replica did not report pending deletion",
+	"count_skipped":               "manual rotation did not increment material version and manual count once",
+	"automatic_history":           "manual rotation missing from rotation history",
+	"replica_unreadable":          "disposable replica did not become readable",
+	"replica_stale":               "replica did not report the rotated material version and manual count",
+	"limit_state":                 "manual rotation limit changed the key state or counts",
+	"replica_delete_type":         "KMS problem type or title differs from the measurement",
+	"created_version":             "new rotation key must have material version 1 and no manual rotations",
+	"created_zone_mode":           "created key has unexpected zone mode, state or usage",
+	"created_count":               "new rotation key must have material version 1 and no manual rotations",
+	"replica_not_pending":         "replica did not report pending deletion",
+	"replica_ready_stale":         "disposable replica did not become readable",
+	"replica_ready_wrong_version": "disposable replica did not become readable",
 }
 
 // TestRotationAssertionsRejectFaults runs the rotation probe against a fake
@@ -97,6 +99,11 @@ func runRotationFault(t *testing.T, fault string) {
 			case fault == "created_count" && read && !atReplica && !rotated:
 				// Misreport only the readbacks of the new key before any rotation.
 				body = bytes.Replace(body, []byte(`"manual-count":0}`), []byte(`"manual-count":3}`), 1)
+			case fault == "replica_ready_stale" && read && atReplica && !rotated:
+				// Misreport only the replica readiness reads before rotation.
+				body = bytes.Replace(body, []byte(`"manual-count":0}`), []byte(`"manual-count":3}`), 1)
+			case fault == "replica_ready_wrong_version" && read && atReplica && !rotated:
+				body = bytes.Replace(body, []byte(`"version":1`), []byte(`"version":2`), 1)
 			case fault == "replica_not_pending" && read && atReplica && deleted:
 				body = bytes.Replace(body, []byte(`"status":"pending-deletion"`), []byte(`"status":"enabled"`), 1)
 			case fault == "automatic_history" && op == "list-key-rotations":
@@ -121,7 +128,7 @@ func runRotationFault(t *testing.T, fault string) {
 	origin, replica := routedProbeClients(t, cfg, srv)
 	probe := conformance.RotationProbe{Origin: origin, Replica: replica, ConfiguredKey: KeyID}
 	switch fault {
-	case "replica_unreadable", "replica_stale", "replica_delete_type", "replica_not_pending", "created_zone_mode":
+	case "replica_unreadable", "replica_stale", "replica_delete_type", "replica_not_pending", "created_zone_mode", "replica_ready_stale", "replica_ready_wrong_version":
 		probe.ReplicaZone = ReplicaZone
 	case "limit_state":
 		probe.CheckLimit = true

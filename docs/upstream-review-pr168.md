@@ -85,9 +85,11 @@ and 2026-11-22 (UTC+01:00).
   type `#/kms-key/manual-rotation-limit`, title
   `Maximum rotation limit exceeded`. The separate limit probe confirmed
   manual count 10 at version 11, in line with the Rotate Key HTTP 400 description, which specifies ten manual rotations per key.
-  Use an owned disposable key for tests that rotate. The single-zone
-  disposable eleventh attempt still needs a live measurement. See
-  `live-run-8-{1,2,3}.txt` and `kms-rotation-limit-run-1.txt`.
+  Use an owned disposable key for tests that rotate. The seventh-edition
+  single-zone run confirmed the eleventh refusal on a created key with
+  count 10 and version 11, followed by working crypto and confirmed
+  cleanup. See `live-run-9-single-zone-limit.txt`, `live-run-8-{1,2,3}.txt`
+  and `kms-rotation-limit-run-1.txt`.
 - At `exoscalekms.go:93–117,179–199`, test replica decrypt before and
   after origin rotation and fail closed after origin deletion. The
   disposable multi-zone probe observed HTTP 200 on origin replication,
@@ -97,14 +99,29 @@ and 2026-11-22 (UTC+01:00).
   Origin scheduling for seven days propagated pending deletion by the
   second replica poll. Replica encrypt then returned HTTP 400 with
   `#/kms-key/key-disabled`. Use HTTP status, type and title to check
-  these refusals. The body status member and origin deletion timestamp
-  remain unmeasured in this multi-zone sample, as do multi-zone cancellation, a third zone and
-  worst-case lag. See `kms-multizone-disposable-probe-run-1.txt`.
-- Four single-node migrations ran on OpenBao 2.7.2 among Shamir, exoscale
-  and static. The November 22 rehearsal also confirmed recovery after a
-  wrong secret and that a startup with an unknown key failed immediately.
-  At `exoscalekms.go:114–117`, add integration cases for those two typed
-  startup failures and recovery with corrected configuration.
+  these refusals. Three seventh-edition all-switch runs with a replica
+  zone passed all 58 entries each on v0.2.0-rc.1. They confirmed replica
+  readiness before rotation, manual rotation history, re-encryption and
+  decrypt of old and new plugin blobs on the created multi-zone key.
+  Replica decrypt succeeded on the first attempt before and after rotation
+  (298–307 ms and 366–381 ms). Each origin readback confirmed pending
+  deletion and the seven-day plan from the deletion timestamp. Each replica
+  reported pending deletion and refused encrypt with HTTP 400. The
+  configured key's revision, material version 11 and manual count 10
+  were unchanged across those three runs and the single-zone run.
+  The replica refusals' body status member, multi-zone deletion
+  cancellation, replication to a third zone and worst-case lag remain
+  unmeasured. See `kms-multizone-disposable-probe-run-1.txt` and
+  `live-run-9-{1,2,3}.txt`.
+- At `exoscalekms.go:114–117`, add integration cases for typed startup
+  failures and for recovery with corrected configuration. On OpenBao
+  2.7.2, the v0.2.0-rc.1 rehearsal passed all eight stages in 40 seconds,
+  including initialization, restart, HTTP 403 with a wrong credential,
+  recovery after restoring the credential and four migrations among
+  Shamir, exoscale and static. With an unknown UUID it failed at
+  initialization with HTTP 400 and `#/kms-key/not-found`. See
+  `e2e-repo-script-run-5.txt` and `e2e-repo-script-wrong-key-run-3.txt`.
+  Multi-node migration and Linux startup log framing remain unmeasured.
 
 - At `exoscalekms.go:114–117,152–154,186–188`, map HTTP 400 types by
   exact equality. The measured list includes `#/kms-key/not-found`
@@ -114,8 +131,11 @@ and 2026-11-22 (UTC+01:00).
   `#/http-problem-types/request-invalid-parameters` (non-base64 ciphertext,
   both or neither data-key selector, and counts 0 and 1025). The
   raw single-zone replication probe also recorded
-  `#/kms-key/multi-zone/key-is-not-multi-zone`. Some HTTP 400 responses,
-  including malformed IDs, instead carry a JSON message and field errors.
+  `#/kms-key/multi-zone/key-is-not-multi-zone`. Include the two types
+  confirmed on disposable keys in edition seven. The types are
+  `#/kms-key/manual-rotation-limit` and
+  `#/kms-key/multi-zone/operation-not-allowed-on-a-replica`. Some HTTP 400
+  responses, including malformed IDs, carry a JSON message and field errors.
   Wrong and unknown API credentials returned HTTP 403 with JSON messages.
   Use a neutral label when no approved type is available. Add tests for
   unknown-key startup, a validation error and a message-only refusal, and
@@ -152,18 +172,15 @@ incomplete body. Run both tests with and without an earlier caller
 deadline. Preserve any observed HTTP status and omit the response body
 from errors.
 
-The account holder files the service-side report separately with
-Exoscale. Operator measurements found unanswered requests after a
-larger refused request. The request size, sequence and per-trial counts
-are reserved for that separate report.
+The account holder reports what preceded the unanswered requests
+privately to Exoscale. Those details are omitted here.
 
 On November 21, one all-switch run observed two incomplete replies
 (HTTP 200 and 400). Two of six plain runs that evening each observed an
-unanswered first attempt. After the request ceiling was reduced, thirteen
-of sixteen suite invocations recorded neither interruption. These were
-four November 21 plain runs and all nine November 22 all-switch rounds.
-Runs 7-1 through 7-3 stopped before the refused-size check. All three
-sixth-edition rounds reached it. The cause, the role of connection
+unanswered first attempt. Of twenty suite invocations at the current
+request ceiling, seventeen recorded neither interruption. These were
+four November 21 plain runs and all thirteen November 22 rounds,
+including the four seventh-edition runs. The cause, the role of connection
 reuse, and the effects in other zones or with other credentials or
 source addresses remain unmeasured. See `README.txt` and
-`live-run-8-{1,2,3}.txt`.
+`live-run-8-{1,2,3}.txt` and `live-run-9-{1,2,3}.txt`.

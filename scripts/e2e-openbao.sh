@@ -95,7 +95,8 @@ def safe_server_line(line):
         rb"Exoscale KMS (configure|encrypt|decrypt): HTTP ([1-5][0-9]{2})"
         rb"(?: \((#/crypto/invalid-ciphertext|#/kms-key/key-disabled|"
         rb"#/kms-key/multi-zone/key-is-not-multi-zone|#/kms-key/not-found|"
-        rb"#/http-problem-types/request-invalid-parameters|unclassified)\)|(?=\s*$))",
+        rb"#/http-problem-types/request-invalid-parameters|#/kms-key/manual-rotation-limit|"
+        rb"#/kms-key/multi-zone/operation-not-allowed-on-a-replica|unclassified)\)|(?=\s*$))",
         line,
     )
     if diagnostic:

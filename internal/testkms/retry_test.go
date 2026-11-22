@@ -62,6 +62,23 @@ func closeUnanswered(t *testing.T, w http.ResponseWriter) {
 	}
 }
 
+// truncateAfterHeaders ends an incomplete HTTP/1.1 response without a
+// timer. Budget fixtures can then count interruptions independently of the
+// time needed to serve valid responses.
+func truncateAfterHeaders(t *testing.T, w http.ResponseWriter, r *http.Request, status int) {
+	t.Helper()
+	if _, err := io.Copy(io.Discard, r.Body); err != nil {
+		t.Error("drain loopback request before truncating response")
+		return
+	}
+	w.WriteHeader(status)
+	if err := http.NewResponseController(w).Flush(); err != nil {
+		t.Error("flush loopback response headers")
+		return
+	}
+	closeUnanswered(t, w)
+}
+
 func testProbeClient(t *testing.T, cfgKey, cfgSecret string, srv *httptest.Server) conformance.Client {
 	t.Helper()
 	transport := srv.Client().Transport.(*http.Transport).Clone()
@@ -316,16 +333,16 @@ func runUnansweredScenario(t *testing.T, scenario string) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		case scenario == "incomplete_twice" && op == "encrypt",
 			scenario == "incomplete_200" && op == "encrypt" && n == 1:
-			stallAfterHeaders(t, w, r, http.StatusOK)
+			truncateAfterHeaders(t, w, r, http.StatusOK)
 		case scenario == "incomplete_400" && op == "generate-data-key" && n == 6:
-			stallAfterHeaders(t, w, r, http.StatusBadRequest)
+			truncateAfterHeaders(t, w, r, http.StatusBadRequest)
 		case scenario == "over_limit" && op == "encrypt" && (n == 3 || n == 7):
-			stallAfterHeaders(t, w, r, http.StatusOK)
+			truncateAfterHeaders(t, w, r, http.StatusOK)
 		case strings.HasPrefix(scenario, "incomplete_rotation") && op == "rotate" && n == 1:
 			if scenario == "incomplete_rotation_applied" {
 				next.ServeHTTP(httptest.NewRecorder(), r)
 			}
-			stallAfterHeaders(t, w, r, http.StatusOK)
+			truncateAfterHeaders(t, w, r, http.StatusOK)
 		case op == "encrypt" && ((scenario == "recover" && n == 1) ||
 			(scenario == "no_answer_twice" && n <= 2) ||
 			(scenario == "at_limit" && n <= 7 && n%2 == 1) ||
@@ -347,9 +364,6 @@ func runUnansweredScenario(t *testing.T, scenario string) {
 		}
 	})
 	c := testProbeClient(t, cfg.APIKey, cfg.APISecret, srv)
-	if strings.HasPrefix(scenario, "incomplete") || scenario == "over_limit" {
-		c.HTTP.Timeout = 300 * time.Millisecond
-	}
 	switch scenario {
 	case "answered":
 		replayCount = 1

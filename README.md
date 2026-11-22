@@ -2,7 +2,7 @@
 
 # Exoscale KMS for OpenBao and OpenTofu
 
-Release candidate `v0.2.0-rc.1`.
+Release candidate `v0.2.0-rc.2`.
 
 - `openbao-plugin-kms-exoscale` provides the `exoscale` auto-unseal seal for
   OpenBao 2.7.2. It serves the `exoscalekms` wrapper proposed by the Exoscale
@@ -485,10 +485,10 @@ latency target.
 | OpenTofu recovered a prior 32-byte derived key and generated a fresh one. The test accepts 223- and 224-byte wraps and uses only generation and decrypt permissions. | `provider_roundtrip` |
 | Correct context decrypts. An absent, different or newly added context returned HTTP 400 with `#/crypto/invalid-ciphertext`. The raw absent and different samples captured title `Invalid ciphertext`. The provider also tested the mismatch directions using context on generate-data-key. | `encryption_context/{same,absent,different,added}`, `provider_context` |
 | AES-256 returned 32 bytes. Counts of 1, 64 and 1024 returned the requested size. For measured material versions, wrapped lengths use the overhead above. Both or neither selector returned HTTP 400 with `#/http-problem-types/request-invalid-parameters` and title `Invalid argument`; counts 0 and 1025 returned the same type with title `Invalid Request`. | `generate_data_key/{aes_256,one_byte,64_bytes,1024_bytes,both,neither,too_small,too_large}` |
-| Encrypt tests assert the overhead for measured material versions. Repeat encryptions shared a nine-byte prefix. The largest accepted plaintext tested was 524288 bytes (512 KiB), and the smallest refused was 786432 bytes (768 KiB). The three sixth-edition runs verified HTTP 500, an absent Content-Type header and exactly the 12-byte body `server error` at 786432 bytes. Response framing is unmeasured. The subtest logs only fixed response fields. The exact boundary between 524288 and 786432 bytes and the behavior at intervening sizes are unmeasured. | `ciphertext_shape`, `payload_bound` |
+| Encrypt tests assert the overhead for measured material versions. Repeat encryptions shared a nine-byte prefix. The largest accepted plaintext tested was 524288 bytes (512 KiB), and the smallest refused was 786432 bytes (768 KiB). All three sixth-edition runs and all four seventh-edition runs verified HTTP 500, an absent Content-Type header and exactly the 12-byte body `server error` at 786432 bytes. Response framing is unmeasured. The subtest logs only fixed response fields. The exact boundary between 524288 and 786432 bytes and the behavior at intervening sizes are unmeasured. | `ciphertext_shape`, `payload_bound` |
 | Manual rotation advanced version and manual count by one. Ciphertexts and plugin blobs from before and after rotation decrypted, and the old ciphertext re-encrypted under the same UUID. The test checks all lengths against their versions. | `rotation`, `plugin_blobs_after_rotation` |
-| At manual count 10 and material version 11, another rotate returned HTTP 400 with `#/kms-key/manual-rotation-limit` and title `Maximum rotation limit exceeded`. The November 21 OpenAPI description specifies ten manual rotations per key. | `rotation/manual_rotation_limit` |
-| One newly created multi-zone key started enabled at version 1 and count 0. Replicate at the origin returned HTTP 200. The original ciphertext decrypted at the replica. Rotate and schedule-deletion at the replica each returned HTTP 400 with `#/kms-key/multi-zone/operation-not-allowed-on-a-replica`. The origin rotated to version 2 and count 1. A fresh ciphertext decrypted at the replica on the first attempt, and replica metadata showed version 2 and count 1. Origin deletion with a seven-day delay was accepted. The replica showed pending deletion on the second poll and then refused encrypt with `#/kms-key/key-disabled`. | `rotation/replica_refusals`, `rotation/post_rotation_replica`, replica cleanup |
+| On both the earlier multi-zone key and a newly created single-zone key, the eleventh manual rotation returned HTTP 400 at manual count 10 and material version 11, with `#/kms-key/manual-rotation-limit` and title `Maximum rotation limit exceeded`. The November 21 OpenAPI description specifies ten manual rotations per key. | `rotation/manual_rotation_limit` |
+| One newly created multi-zone key started enabled at version 1 and count 0. Replicate at the origin returned HTTP 200. The original ciphertext decrypted at the replica. Rotate and schedule-deletion at the replica each returned HTTP 400 with `#/kms-key/multi-zone/operation-not-allowed-on-a-replica`. The origin rotated to version 2 and count 1. A fresh ciphertext decrypted at the replica on the first attempt, and replica metadata showed version 2 and count 1. In the earlier probe the replica showed pending deletion on the second poll, then refused encrypt with `#/kms-key/key-disabled`. All three seventh-edition multi-zone runs confirmed pending deletion and the seven-day plan from the origin readback, then pending deletion and HTTP 400 for encrypt at the replica. | `rotation/replica_refusals`, `rotation/post_rotation_replica`, replica cleanup |
 | Same-key and cross-key re-encrypt succeeded. Decrypt under the wrong key returned HTTP 400 with an ERN mismatch. Its exact type, title and content type are unmeasured. | `same_key_reencrypt`, `different_key_reencrypt`, `ciphertext_of_another_key` |
 | A single-zone key refused replication with HTTP 400 and `#/kms-key/multi-zone/key-is-not-multi-zone`. The full header shape of that refusal is unmeasured. | `single_zone_replication` |
 | Disabled keys, keys pending deletion and cancelled-but-disabled keys refused encrypt, decrypt and generate-data-key with HTTP 400, `#/kms-key/key-disabled`, title `Key is disabled`. Enable restored decrypt. Six days was refused and seven accepted for deletion. The full six-day refusal shape is unmeasured. | `disabled`, `enabled_again`, `pending_deletion`, `cancel_deletion` |
@@ -503,7 +503,7 @@ service. The offline cross-read covers both directions.
 
 ### Live run record
 
-These rounds ran on earlier test suites using the current plaintext
+These rounds ran on earlier test suites and the published v0.2.0-rc.1 tree using the current plaintext
 ceiling. The dates and times are UTC+01:00. All-switch rounds used
 replica, rotation, disposable and rate probes. Least-privilege checks
 were outside these rounds.
@@ -526,9 +526,13 @@ were outside these rounds.
 | 8-1 | November 22, 02:56 | All 55 passed. Plugin entered at version 10 and spent the tenth manual rotation, advancing the key to version 11. | None recorded. |
 | 8-2 | November 22, 02:56 | Provider and raw API passed. Only plugin rotation failed, on the manual-limit HTTP 400. | None recorded. |
 | 8-3 | November 22, 02:57 | Provider and raw API passed. Only plugin rotation failed, on the manual-limit HTTP 400. | None recorded. |
+| 9-1 | November 22, 06:23 | All 58 test and subtest entries passed, with rotation, disposable lifecycle, paced requests and a replica zone. | None recorded. |
+| 9-2 | November 22, 06:24 | All 58 passed, with rotation, disposable lifecycle, paced requests and a replica zone. | None recorded. |
+| 9-3 | November 22, 06:24 | All 58 passed, with rotation, disposable lifecycle, paced requests and a replica zone. | None recorded. |
+| 9 single-zone | November 22, 06:24 | All 52 entries across the three packages passed, with rotation and disposable probes and no replica zone. | None recorded. |
 
-Thirteen of the sixteen rounds recorded no unanswered or incomplete
-reply, including all nine November 22 rounds. The 7-series stopped
+Seventeen of the twenty rounds recorded no unanswered or incomplete
+reply, including all thirteen November 22 rounds. The 7-series stopped
 before the refused-size check. The 8-series completed it and recorded
 a 192-byte overhead, a 224-byte wrapped key and a 327-byte seal blob.
 The times in entries without a preserved transcript come from the
@@ -539,12 +543,23 @@ rotation and 92 ms afterward. On the configured key, the earlier suites'
 post-rotation replica decrypt, which waits 200 ms before its first
 attempt, succeeded at the first attempt in four runs (355 to 372 ms) and
 at the second attempt in two (570 ms on November 21, 679 ms on
-November 22). In the disposable sample, the replica reported pending
-deletion on the second poll, about half a second later. The capture
-leaves the origin deletion timestamp and the replica refusals' Problem
-Details status member unmeasured. The separate single-zone disposable
-sample stopped after ten successful rotations. The next live rehearsal
-checks its eleventh attempt. Worst-case lag, automatic rotation, a third
+November 22). In the earlier disposable sample, the replica reported pending deletion
+on the second poll, about half a second later. In each seventh-edition
+multi-zone run, the created key passed replication readiness, manual
+rotation history, re-encryption and plugin blob checks. Replica decrypt
+succeeded on the first attempt before and after rotation (298–307 ms
+and 366–381 ms respectively). Origin cleanup confirmed the seven-day
+plan from the deletion timestamp. The replica reported pending deletion
+and refused encryption. The replica refusals' Problem Details status
+member remains unmeasured.
+
+The restricted-role probes run separately from the lifecycle probes.
+
+The seventh-edition single-zone run confirmed the eleventh rotation
+refusal at material version 11 and manual count 10. Crypto operations
+still worked and cleanup confirmed deletion was scheduled. The
+configured key had the same revision, material version 11 and manual
+count 10 before and after the four runs. Worst-case lag, automatic rotation, a third
 zone, multi-zone deletion cancellation and origin emission of the new
 width at a multi-zone digit boundary remain unmeasured. So do the
 service quota, exact payload boundary and framing of the refused-size
@@ -556,8 +571,7 @@ The suite's largest request is 786432 plaintext bytes, the smallest
 refused size in the table above. The account holder reports the
 details of what preceded unanswered requests privately to Exoscale.
 The request size, sequence and per-trial counts are omitted from
-public documentation. A separate control at the suite's maximum
-completed without interruptions. The observed interruptions remain
+public documentation. The observed interruptions remain
 unexplained, including the earliest isolated misses and the incomplete
 replies in run 5-1. The cause and the effects for other credentials
 and source addresses remain unmeasured.
@@ -674,7 +688,7 @@ read metadata. The following switches opt into additional probes.
   credential being checked for least privilege.
 
 In the 2026-11-22 operator rehearsal on OpenBao 2.7.2 against live KMS,
-all eight stages passed with a known key. These included initialization,
+all eight stages passed in 40 seconds with a known key. These included initialization,
 auto-unseal after restart, wrong-credential refusal with the fixed
 `Exoscale KMS configure: HTTP 403 (unclassified)` diagnostic, recovery
 after restoring credentials and all four migration directions. With an
@@ -700,9 +714,7 @@ probe writes and reads. The plain-unseal trace measured health and mount
 writes. Health during post-migration transitions remains unmeasured.
 Failures report the stage, safe seal-status fields, an HTTP status if
 available, the fixed plugin diagnostic on a seal configuration error,
-and recent warning and error events with free text removed. The operator
-confirmed both eight-stage success and the unknown-key diagnostic on
-OpenBao 2.7.2 outside the suite.
+and recent warning and error events with free text removed.
 The diagnostic and configuration paths also have offline coverage in
 `scripts/test-e2e-openbao.py`.
 
