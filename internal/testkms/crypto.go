@@ -14,8 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-
-	"github.com/anattix/openbao-plugin-kms-exoscale/internal/conformance"
 )
 
 type message struct {
@@ -26,13 +24,13 @@ type message struct {
 	BytesCount *int   `json:"bytes-count,omitempty"`
 }
 
-func (s *server) crypt(w http.ResponseWriter, id, op string, k *fakeKey, body []byte) {
+func (s *server) crypt(w http.ResponseWriter, id, op string, k *fakeKey, body []byte, atReplica bool) {
 	if k.status != "enabled" {
 		disabled(w)
 		return
 	}
 	if op == "re-encrypt" {
-		s.reencrypt(w, id, k, body)
+		s.reencrypt(w, id, k, body, atReplica)
 		return
 	}
 	var in message
@@ -61,7 +59,7 @@ func (s *server) crypt(w http.ResponseWriter, id, op string, k *fakeKey, body []
 			// Keep unprobed larger sizes outside the measured fixture.
 			w.WriteHeader(http.StatusNotImplemented)
 		default:
-			s.encrypt(w, id, k, in.Plaintext, in.Context, false)
+			s.encrypt(w, id, k, in.Plaintext, in.Context, false, atReplica)
 		}
 	case "decrypt":
 		raw, err := unwrap(id, k.version, s.extraPadding, in.Ciphertext, in.Context)
@@ -82,7 +80,7 @@ func (s *server) crypt(w http.ResponseWriter, id, op string, k *fakeKey, body []
 			plainError(w, 500)
 			return
 		}
-		s.encrypt(w, id, k, raw, in.Context, true)
+		s.encrypt(w, id, k, raw, in.Context, true, atReplica)
 	}
 }
 
@@ -111,7 +109,7 @@ func generationLength(w http.ResponseWriter, in message) int {
 	return *in.BytesCount
 }
 
-func (s *server) reencrypt(w http.ResponseWriter, id string, source *fakeKey, body []byte) {
+func (s *server) reencrypt(w http.ResponseWriter, id string, source *fakeKey, body []byte, atReplica bool) {
 	var in struct {
 		Source struct {
 			Key        string `json:"key"`
@@ -142,11 +140,11 @@ func (s *server) reencrypt(w http.ResponseWriter, id string, source *fakeKey, bo
 		return
 	}
 	defer clear(raw)
-	s.encrypt(w, in.Destination.Key, dest, raw, in.Destination.Context, false)
+	s.encrypt(w, in.Destination.Key, dest, raw, in.Destination.Context, false, atReplica)
 }
 
-func (s *server) encrypt(w http.ResponseWriter, id string, k *fakeKey, plaintext, aad []byte, includePlaintext bool) {
-	wrapped, err := wrap(id, k.version, s.extraPadding, plaintext, aad)
+func (s *server) encrypt(w http.ResponseWriter, id string, k *fakeKey, plaintext, aad []byte, includePlaintext, atReplica bool) {
+	wrapped, err := wrap(id, k.version, s.extraPadding, plaintext, aad, atReplica)
 	if err != nil {
 		plainError(w, 500)
 		return
@@ -160,11 +158,12 @@ func (s *server) encrypt(w http.ResponseWriter, id string, k *fakeKey, plaintext
 
 const (
 	// Only the statistical shape is modelled. The framing is test-only.
-	wirePrefix = "fake-kms!"
-	nonceSize  = 12
-	idSize     = 8
-	padSize    = 142
-	headerSize = len(wirePrefix) + nonceSize + idSize + 4
+	wirePrefix        = "fake-kms!"
+	nonceSize         = 12
+	idSize            = 8
+	padSize           = 142
+	headerSize        = len(wirePrefix) + nonceSize + idSize + 4
+	replicaBit uint32 = 1 << 31
 )
 
 var (
@@ -180,8 +179,16 @@ func reportCiphertextError(w http.ResponseWriter, err error) {
 	problem(w, 400, "#/crypto/invalid-ciphertext", "Invalid ciphertext", "ciphertext validation failed")
 }
 
-func wrap(id string, version uint32, extra int, plaintext, aad []byte) ([]byte, error) {
-	gcm, err := newGCM(id, version)
+func wrap(id string, version uint32, extra int, plaintext, aad []byte, atReplica bool) ([]byte, error) {
+	padding, err := paddingSize(version, atReplica)
+	if err != nil {
+		return nil, err
+	}
+	material := version
+	if atReplica {
+		material |= replicaBit
+	}
+	gcm, err := newGCM(id, material)
 	if err != nil {
 		return nil, err
 	}
@@ -191,11 +198,7 @@ func wrap(id string, version uint32, extra int, plaintext, aad []byte) ([]byte, 
 	}
 	digest := sha256.Sum256([]byte(id))
 	prefix = append(prefix, digest[:idSize]...)
-	prefix = binary.BigEndian.AppendUint32(prefix, version)
-	padding, err := paddingSize(version)
-	if err != nil {
-		return nil, err
-	}
+	prefix = binary.BigEndian.AppendUint32(prefix, material)
 	padding += extra
 	padded := append(make([]byte, padding, padding+len(plaintext)), plaintext...)
 	defer clear(padded)
@@ -203,23 +206,24 @@ func wrap(id string, version uint32, extra int, plaintext, aad []byte) ([]byte, 
 }
 
 func unwrap(id string, currentVersion uint32, extra int, blob, aad []byte) ([]byte, error) {
-	if len(blob) < headerSize+padSize+16 || !bytes.HasPrefix(blob, []byte(wirePrefix)) {
+	if len(blob) < headerSize+16 || !bytes.HasPrefix(blob, []byte(wirePrefix)) {
 		return nil, errCiphertext
 	}
 	digest := sha256.Sum256([]byte(id))
 	if !bytes.Equal(blob[len(wirePrefix)+nonceSize:headerSize-4], digest[:idSize]) {
 		return nil, errOtherKey
 	}
-	version := binary.BigEndian.Uint32(blob[headerSize-4 : headerSize])
+	material := binary.BigEndian.Uint32(blob[headerSize-4 : headerSize])
+	version := material &^ replicaBit
 	if version > currentVersion {
 		return nil, errCiphertext
 	}
-	padding, err := paddingSize(version)
+	padding, err := paddingSize(version, material&replicaBit != 0)
 	if err != nil {
 		return nil, err
 	}
 	padding += extra
-	gcm, err := newGCM(id, version)
+	gcm, err := newGCM(id, material)
 	if err != nil {
 		return nil, err
 	}
@@ -236,12 +240,20 @@ func unwrap(id string, currentVersion uint32, extra int, blob, aad []byte) ([]by
 }
 
 // paddingSize varies only the fake's length. Its header is private to the fake.
-func paddingSize(version uint32) (int, error) {
-	overhead := conformance.MeasuredOverhead(int(version))
-	if overhead == 0 {
+func paddingSize(version uint32, atReplica bool) (int, error) {
+	// Model the measured lengths independently of the assertions.
+	padding := padSize
+	switch {
+	case version >= 1 && version <= 9:
+	case version >= 10 && version <= 99:
+		padding++
+	default:
 		return 0, errors.New("fake KMS has no overhead for this material version")
 	}
-	return padSize + overhead - conformance.MeasuredOverhead(1), nil
+	if atReplica {
+		padding--
+	}
+	return padding, nil
 }
 
 func newGCM(id string, version uint32) (cipher.AEAD, error) {

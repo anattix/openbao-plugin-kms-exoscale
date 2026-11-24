@@ -62,10 +62,10 @@ func providerRoundTrip(t *testing.T, cfg kmsapi.Config) (output, []byte) {
 	second := exchange(t, meta, load)
 	defer clear(second.Keys.Encryption)
 	defer clear(second.Keys.Decryption)
-	if !conformance.MeasuredCiphertextLength(kmsapi.KeySize, len(first.Meta.ExternalData.WrappedKey)) {
+	if !conformance.MeasuredCiphertextLength(cfg.Zone, kmsapi.KeySize, len(first.Meta.ExternalData.WrappedKey)) {
 		t.Error("first provider wrap is outside the measured lengths")
 	}
-	if !conformance.MeasuredCiphertextLength(kmsapi.KeySize, len(second.Meta.ExternalData.WrappedKey)) {
+	if !conformance.MeasuredCiphertextLength(cfg.Zone, kmsapi.KeySize, len(second.Meta.ExternalData.WrappedKey)) {
 		t.Error("second provider wrap is outside the measured lengths")
 	}
 	if t.Failed() || len(first.Keys.Encryption) != kmsapi.KeySize ||

@@ -43,7 +43,11 @@ func TestLiveConformance(t *testing.T) {
 	}
 	origin := pluginClient(t, "TestServer")
 	setLiveConfig(t, ctx, origin, settings)
-	blob, old, encryptTime := initialSeal(t, ctx, origin)
+	sealZone := cfg.Zone
+	if explicitZone := conformance.EndpointZone(settings["endpoint"]); kmsapi.ValidZone(explicitZone) {
+		sealZone = explicitZone
+	}
+	blob, old, encryptTime := initialSeal(t, ctx, origin, sealZone)
 	if !t.Run("plugin_roundtrip", func(t *testing.T) {
 		keyLen := len(blob.GetKeyInfo().GetWrappedKey())
 		start := time.Now()
@@ -105,14 +109,19 @@ func TestLiveConformance(t *testing.T) {
 			setLiveConfig(t, ctx, remote, map[string]string{
 				"key_id": cfg.KeyID, "zone": zone, "api_key": settings["api_key"], "api_secret": settings["api_secret"],
 			})
-			liveDecrypt(t, ctx, remote, old)
-			liveDecrypt(t, ctx, origin, liveWire(t, ctx, remote))
+			replicaSealRoundTrip(t, ctx, origin, remote, old, zone)
 			t.Log("KMS plugin_replica same_uuid=true both_directions=true")
 		})
 	}
 	if os.Getenv("EXOSCALEKMS_LIVE_ROTATE") == "1" && !t.Failed() {
 		t.Run("rotation", func(t *testing.T) { liveRotation(t, ctx, cfg, settings, zone) })
 	}
+}
+
+func replicaSealRoundTrip(t *testing.T, ctx context.Context, origin, replica wrapping.Wrapper, old []byte, zone string) {
+	t.Helper()
+	liveDecrypt(t, ctx, replica, old)
+	liveDecrypt(t, ctx, origin, liveWire(t, ctx, replica, zone))
 }
 
 func liveRotation(t *testing.T, ctx context.Context, cfg kmsapi.Config, settings map[string]string, zone string) {
@@ -159,25 +168,25 @@ func configureRotationSeal(t *testing.T, ctx context.Context, id, zone, endpoint
 	owned := map[string]string{"key_id": id, "zone": zone, "endpoint": endpoint,
 		"api_key": settings["api_key"], "api_secret": settings["api_secret"]}
 	setLiveConfig(t, ctx, w, owned)
-	return rotationSeal(t, ctx, w, version)
+	return rotationSeal(t, ctx, w, zone, version)
 }
 
-func rotationSeal(t *testing.T, ctx context.Context, w wrapping.Wrapper, before int) func(*testing.T, int) {
+func rotationSeal(t *testing.T, ctx context.Context, w wrapping.Wrapper, zone string, before int) func(*testing.T, int) {
 	t.Helper()
-	old := versionedPluginWire(t, ctx, w, "rotation_old_seal", before)
+	old := versionedPluginWire(t, ctx, w, "rotation_old_seal", zone, before)
 	return func(t *testing.T, after int) {
-		fresh := versionedPluginWire(t, ctx, w, "rotation_fresh_seal", after)
+		fresh := versionedPluginWire(t, ctx, w, "rotation_fresh_seal", zone, after)
 		liveDecrypt(t, ctx, w, old)
 		liveDecrypt(t, ctx, w, fresh)
 		t.Log("KMS plugin_blobs_after_rotation old_decrypt=true new_decrypt=true")
 	}
 }
 
-func versionedPluginWire(t *testing.T, ctx context.Context, w wrapping.Wrapper, label string, version int) []byte {
+func versionedPluginWire(t *testing.T, ctx context.Context, w wrapping.Wrapper, label, zone string, version int) []byte {
 	t.Helper()
 	blob, wire := marshalSeal(t, ctx, w)
 	keyLen := len(blob.GetKeyInfo().GetWrappedKey())
-	overhead := conformance.MeasuredOverhead(version)
+	overhead := conformance.MeasuredOverhead(zone, version)
 	if overhead == 0 || keyLen != 32+overhead || len(wire) != keyLen+103 {
 		t.Errorf("%s: live plugin blob or wrapped key length differs from the material version", label)
 	}
@@ -200,27 +209,27 @@ func liveEncrypt(t *testing.T, ctx context.Context, w wrapping.Wrapper) *wrappin
 	return blob
 }
 
-func liveWire(t *testing.T, ctx context.Context, w wrapping.Wrapper) []byte {
+func liveWire(t *testing.T, ctx context.Context, w wrapping.Wrapper, zone string) []byte {
 	t.Helper()
-	_, wire := sealFixture(t, ctx, w)
+	_, wire := sealFixture(t, ctx, w, zone)
 	return wire
 }
 
 // initialSeal seals the first fixture of the live suite through the measured
 // length check; the offline skew test calls it directly.
-func initialSeal(t *testing.T, ctx context.Context, w wrapping.Wrapper) (*wrapping.BlobInfo, []byte, time.Duration) {
+func initialSeal(t *testing.T, ctx context.Context, w wrapping.Wrapper, zone string) (*wrapping.BlobInfo, []byte, time.Duration) {
 	t.Helper()
 	start := time.Now()
-	blob, wire := sealFixture(t, ctx, w)
+	blob, wire := sealFixture(t, ctx, w, zone)
 	return blob, wire, time.Since(start)
 }
 
 // sealFixture encrypts the fixture and checks the measured lengths; every live
 // seal blob, including the first one, goes through it.
-func sealFixture(t *testing.T, ctx context.Context, w wrapping.Wrapper) (*wrapping.BlobInfo, []byte) {
+func sealFixture(t *testing.T, ctx context.Context, w wrapping.Wrapper, zone string) (*wrapping.BlobInfo, []byte) {
 	t.Helper()
 	blob, wire := marshalSeal(t, ctx, w)
-	checkSealLengths(t, len(wire), len(blob.GetKeyInfo().GetWrappedKey()))
+	checkSealLengths(t, zone, len(wire), len(blob.GetKeyInfo().GetWrappedKey()))
 	return blob, wire
 }
 
@@ -234,20 +243,18 @@ func marshalSeal(t *testing.T, ctx context.Context, w wrapping.Wrapper) (*wrappi
 	return blob, wire
 }
 
-// These seal checks read no key metadata, and the replica can emit the
-// previous version after rotation. Accept the 223- and 224-byte wraps of the
-// measured 191- and 192-byte overheads, as every version-unaware check does;
-// the unexplained 222-byte sample of v0.1.0 is not accepted. The fixture
-// protobuf fields contribute 103 bytes.
-func checkSealLengths(t *testing.T, blobLen, keyLen int) {
+// These checks allow either supported version width for the issuing zone
+// without requiring extra IAM permissions. The fixture protobuf contributes
+// 103 bytes beyond the wrapped key.
+func checkSealLengths(t *testing.T, zone string, blobLen, keyLen int) {
 	t.Helper()
-	if !measuredSealLengths(blobLen, keyLen) {
+	if !measuredSealLengths(zone, blobLen, keyLen) {
 		t.Fatal("live plugin blob or wrapped key length differs from the measurement")
 	}
 }
 
-func measuredSealLengths(blobLen, keyLen int) bool {
-	return conformance.MeasuredCiphertextLength(32, keyLen) && blobLen == keyLen+103
+func measuredSealLengths(zone string, blobLen, keyLen int) bool {
+	return conformance.MeasuredCiphertextLength(zone, 32, keyLen) && blobLen == keyLen+103
 }
 
 func liveDecrypt(t *testing.T, ctx context.Context, w wrapping.Wrapper, wire []byte) {

@@ -40,10 +40,10 @@ func Replica(t *testing.T, origin, replica Client, id string) {
 	dec(t, replica, id, fromOrigin, nil, plain)
 	fromReplica := enc(t, replica, id, plain, nil)
 	dec(t, origin, id, fromReplica, nil, plain)
-	if !MeasuredCiphertextLength(len(plain), len(fromOrigin)) {
+	if !MeasuredCiphertextLength(EndpointZone(origin.Endpoint), len(plain), len(fromOrigin)) {
 		t.Error("origin ciphertext length is outside the measured sizes")
 	}
-	if !MeasuredCiphertextLength(len(plain), len(fromReplica)) {
+	if !MeasuredCiphertextLength(EndpointZone(replica.Endpoint), len(plain), len(fromReplica)) {
 		t.Error("replica ciphertext length is outside the measured sizes")
 	}
 	t.Log("KMS replica same_uuid=true both_directions=true")
@@ -150,7 +150,7 @@ func disposableData(t *testing.T, c Client, configured, owned, replicateZone str
 	})
 	t.Run("different_key_reencrypt", func(t *testing.T) {
 		out := reencrypt(t, c, configured, owned, original)
-		checkCiphertextLength(t, metadata(t, c, owned).Material.Version, len(plain), len(out))
+		checkCiphertextLength(t, EndpointZone(c.Endpoint), metadata(t, c, owned).Material.Version, len(plain), len(out))
 		dec(t, c, owned, out, nil, plain)
 		t.Log("KMS different_key_reencrypt status=200 roundtrip=true")
 	})

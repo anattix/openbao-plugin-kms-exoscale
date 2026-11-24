@@ -88,9 +88,9 @@ func (p RotationProbe) rotateAndProbe(t *testing.T, id string, before reply, pla
 	dec(t, p.Origin, id, fresh, nil, plain)
 	rewrapped := reencrypt(t, p.Origin, id, id, old)
 	dec(t, p.Origin, id, rewrapped, nil, plain)
-	checkCiphertextLengthAs(t, "rotation_old", before.Material.Version, len(plain), len(old))
-	checkCiphertextLengthAs(t, "rotation_fresh", after.Material.Version, len(plain), len(fresh))
-	checkCiphertextLengthAs(t, "rotation_rewrapped", after.Material.Version, len(plain), len(rewrapped))
+	checkCiphertextLengthAs(t, "rotation_old", EndpointZone(p.Origin.Endpoint), before.Material.Version, len(plain), len(old))
+	checkCiphertextLengthAs(t, "rotation_fresh", EndpointZone(p.Origin.Endpoint), after.Material.Version, len(plain), len(fresh))
+	checkCiphertextLengthAs(t, "rotation_rewrapped", EndpointZone(p.Origin.Endpoint), after.Material.Version, len(plain), len(rewrapped))
 	history := success(t, sendRaw(t, p.Origin, http.MethodGet, "/"+id+"/list-key-rotations", nil))
 	for _, rotation := range history.Rotations {
 		if rotation.Version == after.Material.Version && !rotation.Automatic {
@@ -131,7 +131,7 @@ func (p RotationProbe) checkManualLimit(t *testing.T, id string, old, plain []by
 	}
 	dec(t, p.Origin, id, old, nil, plain)
 	fresh := enc(t, p.Origin, id, plain, nil)
-	checkCiphertextLengthAs(t, "rotation_limit_fresh", current.Material.Version, len(plain), len(fresh))
+	checkCiphertextLengthAs(t, "rotation_limit_fresh", EndpointZone(p.Origin.Endpoint), current.Material.Version, len(plain), len(fresh))
 	dec(t, p.Origin, id, fresh, nil, plain)
 	t.Log("KMS manual_rotation_limit HTTP=400 manual_count=10 material_version=11")
 }

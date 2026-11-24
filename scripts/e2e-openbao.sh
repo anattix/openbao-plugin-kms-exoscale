@@ -128,7 +128,7 @@ class Rehearsal:
         self.wrong_secret.write_bytes(secrets.token_hex(32).encode())
         self.static_key = scratch / "static.key"
         self.static_key.write_bytes(secrets.token_bytes(32))
-        self.version = "v0.2.0-rc.3"
+        self.version = "v0.2.0-rc.4"
         (scratch / "plugins").mkdir()
         plugin = scratch / "plugins/openbao-plugin-kms-exoscale"
         if binary:

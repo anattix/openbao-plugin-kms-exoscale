@@ -29,10 +29,13 @@ jobs:
           go mod verify
           test -z "$(gofmt -l cmd internal)"
           manifest=third_party/exoscalekms/MANIFEST.txt
+          grep -q '^head commit aad18865db438363ffd9927dda970ce3bbd952fb ' "$manifest"
           awk '$2 ~ /^wrappers\/exoscalekms\// {
             sub("^wrappers/exoscalekms/", "third_party/exoscalekms/", $2)
             print $1, $2
-          }' "$manifest" | sha256sum -c -
+          }' "$manifest" > "$RUNNER_TEMP/wrapper-sha256"
+          test "$(wc -l < "$RUNNER_TEMP/wrapper-sha256")" -eq 6
+          sha256sum -c "$RUNNER_TEMP/wrapper-sha256"
       - name: Validate rehearsal script
         run: |
           bash -n scripts/e2e-openbao.sh

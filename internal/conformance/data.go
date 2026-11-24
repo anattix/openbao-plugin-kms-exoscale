@@ -24,7 +24,7 @@ func Data(t *testing.T, c Client, id string) {
 	t.Run("ciphertext_shape", func(t *testing.T) { shape(t, c, id, version) })
 	t.Run("payload_bound", func(t *testing.T) {
 		wrapped := enc(t, c, id, make([]byte, 262144), nil)
-		checkCiphertextLength(t, version, 262144, len(wrapped))
+		checkCiphertextLength(t, EndpointZone(c.Endpoint), version, 262144, len(wrapped))
 		for _, size := range []int{393216, 524288} {
 			enc(t, c, id, make([]byte, size), nil)
 		}
@@ -37,7 +37,7 @@ func Data(t *testing.T, c Client, id string) {
 	t.Run("same_key_reencrypt", func(t *testing.T) {
 		out := reencrypt(t, c, id, id, wrapped)
 		dec(t, c, id, out, nil, plain)
-		checkCiphertextLength(t, version, len(plain), len(out))
+		checkCiphertextLength(t, EndpointZone(c.Endpoint), version, len(plain), len(out))
 		if bytes.Equal(out, wrapped) {
 			t.Fatal("re-encrypt must return fresh ciphertext")
 		}
@@ -115,7 +115,7 @@ func generateCases(t *testing.T, c Client, id string, version int) {
 			if len(out.Plaintext) != tc.length {
 				t.Fatal("unexpected generated plaintext length")
 			}
-			checkCiphertextLength(t, version, tc.length, len(out.Ciphertext))
+			checkCiphertextLength(t, EndpointZone(c.Endpoint), version, tc.length, len(out.Ciphertext))
 			dec(t, c, id, out.Ciphertext, nil, out.Plaintext)
 			t.Logf("KMS generate_%s plaintext_bytes=%d wrapped_bytes=%d elapsed_ms=%d", tc.name, len(out.Plaintext), len(out.Ciphertext), elapsed.Milliseconds())
 		})
@@ -128,7 +128,7 @@ func shape(t *testing.T, c Client, id string, version int) {
 	var overhead int
 	for _, size := range []int{1, 16, 32, 4096, 65536} {
 		wrapped := enc(t, c, id, make([]byte, size), nil)
-		checkCiphertextLengthAs(t, "ciphertext_shape", version, size, len(wrapped))
+		checkCiphertextLengthAs(t, "ciphertext_shape", EndpointZone(c.Endpoint), version, size, len(wrapped))
 		overhead = len(wrapped) - size
 	}
 	a := enc(t, c, id, make([]byte, 32), nil)

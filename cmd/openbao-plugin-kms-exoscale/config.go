@@ -48,9 +48,10 @@ func resolveConfig(ctx context.Context, options ...wrapping.Option) (map[string]
 		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(endpoint, "#") {
 		return nil, errors.New("Exoscale KMS endpoint must be HTTPS without credentials, query or fragment")
 	}
-	if u.EscapedPath() != "/v2" {
-		return nil, errors.New("Exoscale KMS endpoint path must be /v2 without a trailing slash")
+	if strings.TrimSuffix(u.EscapedPath(), "/") != "/v2" {
+		return nil, errors.New("Exoscale KMS endpoint path must be /v2 with at most one trailing slash")
 	}
+	endpoint = strings.TrimSuffix(endpoint, "/")
 	apiKey := fromEnv(opts, upstream.EnvExoscaleApiKey, "")
 	secret := fromEnv(opts, upstream.EnvExoscaleApiSecret, "")
 	apiKey, err = credential(ctx, opts, "api_key", apiKey)

@@ -4,8 +4,10 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,7 +21,7 @@ func TestStanzaPortability(t *testing.T) {
 		pluginOK, bareOK                                                        bool
 	}{
 		{name: "explicit HTTPS and environment", pluginOK: true, bareOK: true},
-		{name: "trailing slash", trailingSlash: true},
+		{name: "trailing slash", trailingSlash: true, pluginOK: true, bareOK: true},
 		{name: "missing file under environment value", missingFile: true},
 		{name: "environment value beside newline file", newlineFile: true, pluginOK: true, bareOK: true},
 		{name: "missing environment reference under environment value", missingEnv: true},
@@ -60,10 +62,13 @@ func TestStanzaPortability(t *testing.T) {
 			} {
 				client := pluginClient(t, probe.server)
 				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-				_, err := client.SetConfig(ctx, wrapping.WithConfigMap(settings), wrapping.WithDisallowEnvVars(tc.disallow))
+				config, err := client.SetConfig(ctx, wrapping.WithConfigMap(settings), wrapping.WithDisallowEnvVars(tc.disallow))
 				cancel()
 				if (err == nil) != probe.ok {
 					t.Fatalf("%s configuration success: got %t, want %t", probe.server, err == nil, probe.ok)
+				}
+				if probe.ok && config.GetMetadata()["endpoint"] != endpoint {
+					t.Fatalf("%s did not report the canonical endpoint", probe.server)
 				}
 			}
 		})
@@ -94,4 +99,35 @@ func writeFixture(t *testing.T, name, value string) string {
 		t.Fatal("write synthetic credential fixture")
 	}
 	return path
+}
+
+func TestBareServerStartupDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name                        string
+		callerTimeout, lower, upper time.Duration
+	}{
+		{"wrapper deadline", 37 * time.Second, 28 * time.Second, 34 * time.Second},
+		{"earlier caller deadline", 750 * time.Millisecond, 0, 5 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var reached atomic.Bool
+			cfg, endpoint := fakeEndpoint(t, func(_ http.ResponseWriter, r *http.Request, op string) bool {
+				if op != "get" {
+					return false
+				}
+				reached.Store(true)
+				<-r.Context().Done()
+				return true
+			})
+			client := pluginClient(t, "TestBareServer")
+			ctx, cancel := context.WithTimeout(t.Context(), tc.callerTimeout)
+			defer cancel()
+			start := time.Now()
+			err := configureRemote(ctx, client, cfg.KeyID, endpoint)
+			elapsed := time.Since(start)
+			if err == nil || !reached.Load() || elapsed < tc.lower || elapsed >= tc.upper {
+				t.Fatalf("bare startup did not hit the expected deadline window, got %s", elapsed)
+			}
+		})
+	}
 }

@@ -2,21 +2,26 @@
 
 # Exoscale KMS for OpenBao and OpenTofu
 
-Release candidate `v0.2.0-rc.3`.
+Release candidate `v0.2.0-rc.4`.
 
 - `openbao-plugin-kms-exoscale` provides the `exoscale` auto-unseal seal for
   OpenBao 2.7.2. It serves the `exoscalekms` wrapper proposed by the Exoscale
   KMS team, pinned to commit
-  `cde32eb9b902bae1d97b3ef2b8b92e00d9c47f4e`. [OpenBao wrapper PR 168](https://github.com/openbao/go-kms-wrapping/pull/168)
+  `aad18865db438363ffd9927dda970ce3bbd952fb`. [OpenBao wrapper PR 168](https://github.com/openbao/go-kms-wrapping/pull/168)
 - `tofu-keyprovider-exoscale-kms` implements the OpenTofu 1.13.1 external key
   provider protocol for encrypting state and plans with `aes_gcm`.
 
-The plugin stores the upstream wrapper's envelope unchanged. Once OpenBao
-publishes a plugin that uses this format, replace this binary and its pinned
-version and digest while keeping the seal name, KMS key and zone. This
-replacement requires no seal migration. Use the seal migration procedure
-below to move from a different seal, including an earlier prototype that
-stored a private envelope format.
+This repository provides an interim OpenBao seal plugin. The author of
+PR 168, who is on the Exoscale KMS team, says a plugin in
+`openbao-plugins` will follow the merge of PR 168, which was open and
+awaiting maintainer review on 2026-11-24.
+Move to that plugin when it is available. The seal here stores the
+upstream envelope unchanged. If the published plugin preserves the
+envelope and can use your stanza, rehearse replacing the binary and its
+pinned version and digest with the same seal name, KMS key and zone.
+That replacement requires no seal migration. Use the migration
+procedure below for a different seal or an earlier prototype with
+a private envelope format. [PR author's reply](https://github.com/openbao/go-kms-wrapping/pull/168#issuecomment-7125989148)
 
 The seal binary uses the upstream wrapper and its Exoscale Go SDK to avoid a
 second envelope implementation. The state provider retains its small
@@ -55,6 +60,24 @@ Verify it in the directory with the binaries using `sha256sum -c SHA256SUMS`.
 Use the verified plugin digest in OpenBao's configuration. CI compares
 digests built in different checkout paths on two runner images.
 
+## Upgrade from v0.2.0-rc.3 to v0.2.0-rc.4
+
+Install the new OpenBao seal executable, update the plugin stanza to
+`v0.2.0-rc.4` and pin its new SHA-256 from the verified release build.
+Restart a standby node first. The OpenTofu key provider binary has the
+same SHA-256 when built with the same Go patch release, target and
+flags. Keep its current pin. Existing sealed data and OpenTofu state can
+be read with the same keys and settings.
+
+The seal accepts one optional slash after an explicit `/v2` endpoint
+and sends requests to the same canonical path as the bare wrapper.
+The new upstream 30-second deadline leaves the seal's five-second
+attempts and 15-second call budget in effect. Option and environment
+names, credential handling and proxy behavior carry forward from rc.3.
+The conformance suite now checks the issuing zone when asserting
+ciphertext lengths. That change affects test expectations only.
+[PR author's reply](https://github.com/openbao/go-kms-wrapping/pull/168#issuecomment-7125989148)
+
 ## Configure the OpenBao seal
 
 OpenBao 2.7 removed the built-in cloud seals. A KMS plugin must be configured
@@ -67,7 +90,7 @@ plugin_directory = "/opt/openbao/plugins"
 
 plugin "kms" "exoscale" {
   command   = "openbao-plugin-kms-exoscale"
-  version   = "v0.2.0-rc.3"
+  version   = "v0.2.0-rc.4"
   sha256sum = "<verified 64-character SHA-256 digest>"
 }
 
@@ -89,7 +112,7 @@ credentials out of HCL and deployment arguments.
 | --- | --- | --- |
 | `key_id` | `EXOSCALEKMS_KEY_ID` | KMS key UUID |
 | `zone` | `EXOSCALEKMS_ZONE` | Zone hosting the key |
-| `endpoint` | `EXOSCALEKMS_ENDPOINT` | Optional explicit HTTPS API base URL ending in `/v2` |
+| `endpoint` | `EXOSCALEKMS_ENDPOINT` | Optional explicit HTTPS API base URL ending in `/v2` or `/v2/` |
 | `api_key` | `EXOSCALE_API_KEY` | API key environment value or `file:///absolute/path` in HCL |
 | `api_secret` | `EXOSCALE_API_SECRET` | API secret environment value or `file:///absolute/path` in HCL |
 
@@ -102,13 +125,17 @@ plugin supports this configuration so credentials can stay in mounted
 files when the caller forbids environment reads. A future bare-wrapper
 binary needs to support file resolution in that mode before it can use
 the same stanza. Both forms are exercised in `TestStanzaPortability`.
-The plugin rejects trailing slashes and unresolved credential references.
-An overridden file reference still needs to designate a readable regular
-file of at most 8 KiB. The plugin leaves its bytes unread, so a trailing
-newline in that file is harmless when the environment supplies the
-credential. `TestStanzaPortability` checks the precedence and rejection
-cases. Bare-wrapper HTTP routing with a trailing slash against the live
-service is unmeasured.
+The plugin removes one trailing slash from `/v2/` so that the same
+endpoint spelling works with the bare wrapper and the SDK receives
+`/v2` before it appends the operation path. The plugin rejects double
+slashes, escaped paths and any other endpoint path. Both servers use
+the canonical endpoint in the loopback `TestStanzaPortability` test.
+
+The plugin rejects unresolved credential references. An overridden file
+reference still needs to designate a readable regular file of at most
+8 KiB. The plugin leaves its bytes unread, so a trailing newline is
+harmless when the environment supplies the credential.
+`TestStanzaPortability` checks the precedence and rejection cases.
 
 When a file supplies the credential, it must hold the exact nonempty
 value, up to 8 KiB, with no surrounding whitespace or trailing newline
@@ -135,16 +162,14 @@ signed `GetKmsKey` call to that endpoint, exercised by `plugin_roundtrip`.
 
 ### Upgrading from v0.1.x
 
-Since v0.2.0-rc.1, the plugin refuses endpoints ending in `/v2/` and unresolved
-`file://` or `env://` credential references even when
-`EXOSCALE_API_KEY` or `EXOSCALE_API_SECRET` supplies a value.
-v0.1.x normalized the trailing slash and ignored such references when
-the corresponding environment value was set. Remove the trailing slash
-and fix or remove the unresolved references on every node before replacing
-the binary. Update `version` and `sha256sum` in the plugin stanza and
-restart a standby node first. A node with an old stanza can stay sealed
-with “Exoscale KMS endpoint path must be /v2 without a trailing slash”
-or a credential reference error. Both changes preserve the stored format.
+v0.2.0-rc.4 accepts the single trailing slash that v0.1.x normalized.
+Since v0.2.0-rc.1, the plugin refuses unresolved `file://` or `env://`
+credential references even when `EXOSCALE_API_KEY` or
+`EXOSCALE_API_SECRET` supplies a value. Fix or remove unresolved
+references on every node before replacing the binary. Update `version`
+and `sha256sum` in the plugin stanza and restart a standby node first.
+Follow the migration procedure below if the older executable used the
+private envelope format.
 
 Diagnostics now end with a fixed problem URI or `(unclassified)`, for
 example `Exoscale KMS decrypt: HTTP 400 (#/kms-key/key-disabled)` or
@@ -411,11 +436,15 @@ described below.
 ## Failure behavior and limits
 
 A persistent KMS failure prevents unseal or state-key retrieval. Neither
-command substitutes a local key. The seal uses a 15-second request budget
-per configuration, encryption or decryption call. Calls honor cancellation.
-The SDK retries eligible connection errors and statuses within a 5-second
-attempt. When an attempt reaches its own deadline, the plugin starts another
-within the remaining operation budget. An encrypt retry can wrap a fresh
+command substitutes a local key. The bare wrapper now applies a 30-second
+deadline to client setup (including discovery when needed), Encrypt and
+Decrypt. An earlier caller deadline or cancellation ends the call sooner.
+The seal supplies a 15-second budget per configuration, encryption or
+decryption call and at most five seconds per upstream attempt, so the
+wrapper's 30-second deadline does not extend either plugin limit. The SDK
+retries eligible connection errors and statuses within an attempt. When
+an attempt reaches its own deadline, the plugin starts another within the
+remaining operation budget. [PR author's reply](https://github.com/openbao/go-kms-wrapping/pull/168#issuecomment-7125989148) An encrypt retry can wrap a fresh
 data key if the previous response was lost. The wrapper reuses its configured
 zone for decrypt and uses the
 stored UUID when present. Keep the relevant UUIDs and key versions usable
@@ -437,7 +466,16 @@ An HTTP refusal reports the status and a fixed problem URI or the label
 `unclassified`. The provider reads the wire type. The plugin reads the
 typed HTTP 400 response exposed by egoscale. For other statuses egoscale
 v3.1.65 does not expose a general problem type to the wrapper. Both
-commands discard remote details, titles, messages and identifiers.
+commands discard remote details, titles, messages and identifiers. The
+PR author plans to address refusal reasons in egoscale, whose error text
+would then carry the service's title and detail. The plugin builds its
+errors from the status and problem type only and keeps discarding that
+text; a bare-wrapper binary built on such an egoscale would log it. The
+carried wrapper settles the review's single-slash handling and overall
+deadline. Per-attempt time limits and the other
+[published review notes](docs/upstream-review-pr168.md) remain open.
+[PR author's reply](https://github.com/openbao/go-kms-wrapping/pull/168#issuecomment-7125989148)
+
 `TestPluginRemoteErrors`, `TestPluginReportsInvalidWrappedKey` and
 `TestRemoteProblemTypeAllowlist` cover these diagnostics.
 
@@ -493,8 +531,9 @@ commands discard remote details, titles, messages and identifiers.
 
 ## Measured service behavior
 
-The operator measured the service on 2026-11-21 and 2026-11-22
-(UTC+01:00) in `ch-gva-2` and `ch-dk-2`. On November 22, encrypting
+The operator measured the service on 2026-11-21, 2026-11-22 and
+2026-11-24 in `ch-gva-2` and `ch-dk-2`. On November 22 in
+`ch-gva-2`, encrypting
 1, 32 and 1024 plaintext bytes on a newly created key added 191
 ciphertext bytes at each material version from 1 through 9 and 192 at
 versions 10 and 11. The configured test key also added 192 bytes at
@@ -509,31 +548,44 @@ other accepted payload sizes was checked for presence.
 
 ### Ciphertext length policy
 
-The version-aware tests and the offline fake use 191 bytes at versions
-1–9 and 192 at 10–99. Versions 12–99 are an extrapolation from the
-digit boundary, and a known version above 99 stops the length check
-with the observed overhead in the diagnostic. The fake declines to
-model ciphertext at that version. A missing or invalid material version
-in expected key metadata fails the check. Where a test reads no key
-metadata (provider-only IAM, the plugin seal checks on the configured
-key and both replica directions), it requires a 191- or 192-byte
-overhead. The 222-byte seal sample of v0.1.0 predates the version
-measurements, is unexplained by that relation, and no test accepts it.
-Both production commands treat the wrapped ciphertext as opaque.
+On November 24 a multi-zone key at version 1 added 191 bytes when
+encrypting in `ch-gva-2` and 190 in `ch-dk-2` for plaintexts of
+1, 32 and 1024 bytes. Both zones decrypted the other zone's output
+using the same UUID. The cause of the length difference is unmeasured.
+
+Version-aware tests and the offline fake use the following overheads.
+
+| Issuing zone | Versions 1–9 | Versions 10–99 |
+| --- | ---: | ---: |
+| `ch-gva-2` | 191 | 192 |
+| `ch-dk-2` | 190 | 191 |
+
+The two-digit rule in `ch-gva-2` was measured at 10 and 11 and
+extrapolated through 99. For `ch-dk-2`, the model applies the
+one-byte difference measured at version 1 throughout the same range.
+Other zones use the `ch-gva-2` baseline pending measurements. A
+missing or invalid required version fails the check. The suite and
+fake stop at versions above 99. Tests with no material metadata
+use the two lengths for the issuing zone, including the provider-only
+IAM path and the replica round trips. For seal tests, a standard API
+endpoint identifies the issuing zone. Set the zone to match the
+destination whenever using a custom endpoint. Both production
+commands treat wrapped ciphertext as opaque.
 
 The table names the live assertions. Timings are observations without a
 latency target.
 
 | Observation | Live subtest |
 | --- | --- |
-| Earlier seal samples recorded envelopes of 325–326 bytes and wrapped keys of 222–223 bytes. The fixture adds 103 bytes to the wrapped key, so the 224-byte wrap implied by the version 10 measurement gives a 327-byte envelope in the test. The suite accepts 223- and 224-byte wraps, checks this relation and decrypts the fixture. | `plugin_roundtrip` |
-| OpenTofu recovered a prior 32-byte derived key and generated a fresh one. The test accepts 223- and 224-byte wraps and uses only generation and decrypt permissions. | `provider_roundtrip` |
+| The fixture adds 103 bytes to the wrapped key. At material version 1 this gives a 326-byte seal envelope in `ch-gva-2` and a 325-byte envelope with the `ch-dk-2` overhead. The suite checks the issuing zone's wrapped length and protobuf length, then decrypts the fixture. | `plugin_roundtrip` |
+| OpenTofu recovered a prior 32-byte derived key and generated a fresh one. The test accepts the two wrap lengths for the issuing zone and uses generation and decrypt permissions. | `provider_roundtrip` |
 | Correct context decrypts. An absent, different or newly added context returned HTTP 400 with `#/crypto/invalid-ciphertext`. The raw absent and different samples captured title `Invalid ciphertext`. The provider also tested the mismatch directions using context on generate-data-key. | `encryption_context/{same,absent,different,added}`, `provider_context` |
 | AES-256 returned 32 bytes. Counts of 1, 64 and 1024 returned the requested size. For measured material versions, wrapped lengths use the overhead above. Both or neither selector returned HTTP 400 with `#/http-problem-types/request-invalid-parameters` and title `Invalid argument`; counts 0 and 1025 returned the same type with title `Invalid Request`. | `generate_data_key/{aes_256,one_byte,64_bytes,1024_bytes,both,neither,too_small,too_large}` |
 | Encrypt tests assert the overhead for measured material versions. Repeat encryptions shared a nine-byte prefix. The largest accepted plaintext tested was 524288 bytes (512 KiB), and the smallest refused was 786432 bytes (768 KiB). All three sixth-edition runs and all four seventh-edition runs verified HTTP 500, an absent Content-Type header and exactly the 12-byte body `server error` at 786432 bytes. Response framing is unmeasured. The subtest logs only fixed response fields. The exact boundary between 524288 and 786432 bytes and the behavior at intervening sizes are unmeasured. | `ciphertext_shape`, `payload_bound` |
 | Manual rotation advanced version and manual count by one. Ciphertexts and plugin blobs from before and after rotation decrypted, and the old ciphertext re-encrypted under the same UUID. The test checks all lengths against their versions. | `rotation`, `plugin_blobs_after_rotation` |
 | On both the earlier multi-zone key and a newly created single-zone key, the eleventh manual rotation returned HTTP 400 at manual count 10 and material version 11, with `#/kms-key/manual-rotation-limit` and title `Maximum rotation limit exceeded`. The November 21 OpenAPI description specifies ten manual rotations per key. | `rotation/manual_rotation_limit` |
 | One newly created multi-zone key started enabled at version 1 and count 0. Replicate at the origin returned HTTP 200. The original ciphertext decrypted at the replica. Rotate and schedule-deletion at the replica each returned HTTP 400 with `#/kms-key/multi-zone/operation-not-allowed-on-a-replica`. The origin rotated to version 2 and count 1. A fresh ciphertext decrypted at the replica on the first attempt, and replica metadata showed version 2 and count 1. In the earlier probe the replica showed pending deletion on the second poll, then refused encrypt with `#/kms-key/key-disabled`. All three seventh-edition multi-zone runs confirmed pending deletion and the seven-day plan from the origin readback, then pending deletion and HTTP 400 for encrypt at the replica. | `rotation/replica_refusals`, `rotation/post_rotation_replica`, replica cleanup |
+| The same UUID decrypted both directions across zones. The test checks the ciphertext length for each issuing zone and, for the plugin, the extra 103 bytes in the seal fixture. | `replica`, `plugin_replica` |
 | Same-key and cross-key re-encrypt succeeded. Decrypt under the wrong key returned HTTP 400 with an ERN mismatch. Its exact type, title and content type are unmeasured. | `same_key_reencrypt`, `different_key_reencrypt`, `ciphertext_of_another_key` |
 | A single-zone key refused replication with HTTP 400 and `#/kms-key/multi-zone/key-is-not-multi-zone`. The full header shape of that refusal is unmeasured. | `single_zone_replication` |
 | Disabled keys, keys pending deletion and cancelled-but-disabled keys refused encrypt, decrypt and generate-data-key with HTTP 400, `#/kms-key/key-disabled`, title `Key is disabled`. Enable restored decrypt. Six days was refused and seven accepted for deletion. The full six-day refusal shape is unmeasured. | `disabled`, `enabled_again`, `pending_deletion`, `cancel_deletion` |
@@ -582,6 +634,15 @@ before the refused-size check. The 8-series completed it and recorded
 a 192-byte overhead, a 224-byte wrapped key and a 327-byte seal blob.
 The times in entries without a preserved transcript come from the
 operator's summary of the plain series.
+
+The November 22 rc.3 run passed all 58 entries on the former bench at
+material version 11. On November 24 the rc.3 and wrapper-repin trees
+each passed 41 entries on the new version-1 bench with the origin only.
+With the replica enabled, cross-zone decrypts worked in the raw API
+and the replica plugin decrypted the origin blob. Both trees then
+failed the same two old length checks for ciphertext issued in
+`ch-dk-2`. The updated checks were verified offline against the
+two-zone fake. A live run of this release candidate is pending.
 
 In the multi-zone disposable sample, replica decrypt took 103 ms before
 rotation and 92 ms afterward. On the configured key, the earlier suites'
@@ -751,7 +812,7 @@ To rehearse the two restart scenarios and four migration directions on a
 scratch OpenBao 2.7.2 server:
 
 ```sh
-scripts/e2e-openbao.sh /path/to/bao "$EXOSCALEKMS_KEY_ID" "$EXOSCALEKMS_ZONE" \
+bash scripts/e2e-openbao.sh /path/to/bao "$EXOSCALEKMS_KEY_ID" "$EXOSCALEKMS_ZONE" \
   "$EXOSCALEKMS_API_KEY_FILE" "$EXOSCALEKMS_API_SECRET_FILE" \
   /path/to/openbao-plugin-kms-exoscale
 ```

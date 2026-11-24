@@ -281,7 +281,7 @@ func (s *server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	switch op {
 	case "encrypt", "decrypt", "generate-data-key", "re-encrypt":
-		s.crypt(w, id, op, key, body)
+		s.crypt(w, id, op, key, body, atReplica)
 	default:
 		s.lifecycle(w, id, op, key, body, atReplica)
 	}

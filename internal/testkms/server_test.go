@@ -234,6 +234,32 @@ func TestMeasuredLengthsAcrossRotation(t *testing.T) {
 	t.Run("version_11", func(t *testing.T) { conformance.Data(t, origin, cfg.KeyID) })
 }
 
+// TestFakeZoneOverhead checks the measurements without sharing the suite's
+// overhead table and verifies that either zone can read the other zone's output.
+func TestFakeZoneOverhead(t *testing.T) {
+	for _, tc := range []struct {
+		version         uint32
+		origin, replica int
+	}{{1, 191, 190}, {9, 191, 190}, {10, 192, 191}, {11, 192, 191}, {99, 192, 191}} {
+		for _, size := range []int{1, 32, 1024} {
+			plain := bytes.Repeat([]byte{1}, size)
+			for _, zone := range []struct {
+				atReplica bool
+				want      int
+			}{{false, tc.origin}, {true, tc.replica}} {
+				wire, err := wrap(KeyID, tc.version, 0, plain, nil, zone.atReplica)
+				if err != nil || len(wire)-size != zone.want {
+					t.Fatalf("material version %d replica=%t: got overhead %d, want %d", tc.version, zone.atReplica, len(wire)-size, zone.want)
+				}
+				got, err := unwrap(KeyID, tc.version, 0, wire, nil)
+				if err != nil || !bytes.Equal(got, plain) {
+					t.Fatal("fake could not decrypt the issuing zone's ciphertext")
+				}
+			}
+		}
+	}
+}
+
 // TestUnmeasuredFakeVersion checks the fake's ciphertext boundary without
 // performing automatic rotations.
 func TestUnmeasuredFakeVersion(t *testing.T) {
@@ -241,7 +267,7 @@ func TestUnmeasuredFakeVersion(t *testing.T) {
 		version  uint32
 		overhead int
 	}{{0, 0}, {1, 191}, {12, 192}, {99, 192}, {100, 0}} {
-		wrapped, err := wrap(KeyID, tc.version, 0, make([]byte, 32), nil)
+		wrapped, err := wrap(KeyID, tc.version, 0, make([]byte, 32), nil, false)
 		if tc.overhead == 0 {
 			if err == nil || len(wrapped) != 0 {
 				t.Errorf("fake emitted a ciphertext for unsupported version %d", tc.version)

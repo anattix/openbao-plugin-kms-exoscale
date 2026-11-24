@@ -377,20 +377,46 @@ func TestPluginRetriesDroppedConnection(t *testing.T) {
 	}
 }
 
+func TestPluginReplicaSealLengths(t *testing.T) {
+	cfg, endpoint := fakeEndpoint(t, nil)
+	originURL, err := url.Parse(endpoint)
+	if err != nil {
+		t.Fatal("parse fake origin endpoint")
+	}
+	const replicaHost = "api-" + testkms.ReplicaZone + ".exoscale.com"
+	proxy, _ := testkms.StartConnectProxy(t, replicaHost+":443", originURL.Host)
+	t.Setenv("HTTPS_PROXY", proxy)
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+
+	ctx := t.Context()
+	origin := pluginClient(t, "TestServer")
+	replica := pluginClient(t, "TestServer")
+	if configureRemote(ctx, origin, cfg.KeyID, endpoint) != nil ||
+		configureRemote(ctx, replica, cfg.KeyID, "https://"+replicaHost+"/v2") != nil {
+		t.Fatal("configure both fake zones")
+	}
+	old := liveWire(t, ctx, origin, testkms.Zone)
+	replicaSealRoundTrip(t, ctx, origin, replica, old, testkms.ReplicaZone)
+}
+
 func TestMeasuredSealLengths(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
+		name, zone    string
 		blob, wrapped int
 		want          bool
 	}{
-		{"unexplained historical sample", 325, 222, false},
-		{"one digit", 326, 223, true},
-		{"two digits", 327, 224, true},
-		{"wrong serialization length", 326, 224, false},
-		{"unmeasured wrap", 328, 225, false},
+		{"origin one byte short", testkms.Zone, 325, 222, false},
+		{"origin one digit", testkms.Zone, 326, 223, true},
+		{"origin two digits", testkms.Zone, 327, 224, true},
+		{"replica one digit", testkms.ReplicaZone, 325, 222, true},
+		{"replica two digits", testkms.ReplicaZone, 326, 223, true},
+		{"replica one byte long", testkms.ReplicaZone, 327, 224, false},
+		{"wrong serialization length", testkms.Zone, 326, 224, false},
+		{"unmeasured wrap", testkms.Zone, 328, 225, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if measuredSealLengths(tc.blob, tc.wrapped) != tc.want {
+			if measuredSealLengths(tc.zone, tc.blob, tc.wrapped) != tc.want {
 				t.Fatal("measured seal length check did not match the fixture")
 			}
 		})
@@ -408,12 +434,12 @@ func TestPluginSealLengthsAcrossRotation(t *testing.T) {
 	if err := configureRemote(ctx, remote, cfg.KeyID, endpoint); err != nil {
 		t.Fatal("configure the test plugin")
 	}
-	old := liveWire(t, ctx, remote)
+	old := liveWire(t, ctx, remote, cfg.Zone)
 	if len(old) != 326 {
 		t.Fatal("version 9 seal blob must be 326 bytes")
 	}
 	rotate()
-	next := liveWire(t, ctx, remote)
+	next := liveWire(t, ctx, remote, cfg.Zone)
 	if len(next) != 327 {
 		t.Fatal("version 10 seal blob must be 327 bytes")
 	}
@@ -441,9 +467,9 @@ func TestPluginSealLengthsRejectSkewedOverhead(t *testing.T) {
 			t.Setenv("EXOSCALEKMS_LIVE_ROTATE", "")
 			TestLiveConformance(t)
 		})
-		t.Run("live_wire", func(t *testing.T) { liveDecrypt(t, t.Context(), remote, liveWire(t, t.Context(), remote)) })
+		t.Run("live_wire", func(t *testing.T) { liveDecrypt(t, t.Context(), remote, liveWire(t, t.Context(), remote, cfg.Zone)) })
 		t.Run("rotation_seal", func(t *testing.T) {
-			after := rotationSeal(t, t.Context(), remote, 1)
+			after := rotationSeal(t, t.Context(), remote, cfg.Zone, 1)
 			after(t, 2)
 		})
 		return
@@ -561,7 +587,7 @@ func TestPluginSealLengthsRejectShortWrap(t *testing.T) {
 		if err := configureRemote(t.Context(), remote, cfg.KeyID, endpoint); err != nil {
 			t.Fatal("configure the test plugin")
 		}
-		liveDecrypt(t, t.Context(), remote, liveWire(t, t.Context(), remote))
+		liveDecrypt(t, t.Context(), remote, liveWire(t, t.Context(), remote, cfg.Zone))
 		return
 	}
 	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run", "^TestPluginSealLengthsRejectShortWrap$")
