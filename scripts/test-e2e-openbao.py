@@ -5,6 +5,7 @@ import ast
 import contextlib
 import io
 import json
+import re
 import tempfile
 from pathlib import Path
 import unittest
@@ -153,10 +154,33 @@ class RehearsalTests(unittest.TestCase):
                 self.assertIn("seal configuration error logged", transcript.getvalue())
                 self.assertNotIn("do-not-print", transcript.getvalue())
 
+    def test_every_plugin_problem_type_survives_in_report(self):
+        # The rehearsal parser keeps its own copy of the plugin's fixed list.
+        client = Path(__file__).resolve().parent.parent / "internal/kmsapi/client.go"
+        source = client.read_text(encoding="utf-8")
+        allowlist = source.split("func SafeProblemType(", 1)[1].split("default:", 1)[0]
+        types = re.findall(r'"(#/[^"]+)"', allowlist)
+        self.assertGreaterEqual(len(types), 7)
+        for problem in types:
+            with self.subTest(problem=problem):
+                line = (b'Error configuring seal "exoscale": Exoscale KMS configure: HTTP 400 ('
+                        + problem.encode("ascii") + b')\n')
+                self.assertEqual(self.scope["safe_server_line"](line),
+                                 f"[ERROR] Exoscale KMS configure: HTTP 400 ({problem})")
+
+    def test_plugin_stanza_matches_release(self):
+        root = Path(__file__).resolve().parent.parent
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        script = (root / "scripts/e2e-openbao.sh").read_text(encoding="utf-8")
+        release = re.search(r'Release candidate `([^`]+)`', readme)
+        self.assertIsNotNone(release)
+        self.assertIn(f'version   = "{release[1]}"', readme)
+        self.assertIn(f'self.version = "{release[1]}"', script)
+
     def test_openbao_272_config_omits_unsupported_field(self):
         rehearsal = self.rehearsal()
         rehearsal.port, rehearsal.cluster = 8200, 8201
-        rehearsal.version, rehearsal.digest = "v0.2.0-rc.1", "synthetic-digest"
+        rehearsal.version, rehearsal.digest = "v0.0.0-test", "synthetic-digest"
         with tempfile.TemporaryDirectory() as path:
             rehearsal.scratch = Path(path)
             rehearsal.config = rehearsal.scratch / "test.hcl"

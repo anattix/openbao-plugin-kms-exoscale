@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"syscall"
 	"time"
@@ -20,7 +21,10 @@ import (
 
 const maxResponse = 64 << 10
 
-var errInvalidResponse = errors.New("invalid Exoscale KMS response")
+var (
+	errInvalidResponse  = errors.New("invalid Exoscale KMS response")
+	errProxyUnavailable = errors.New("proxy CONNECT temporarily unavailable")
+)
 
 // Client sends authenticated KMS requests to a single zone.
 type Client struct {
@@ -68,11 +72,14 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	if dial == nil {
 		dial = (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext
 	}
+	base := "https://api-" + cfg.Zone + ".exoscale.com/v2/kms-key/"
 	transport := &http.Transport{
-		DialContext:       dial,
-		TLSClientConfig:   tlsConfig,
-		ForceAttemptHTTP2: true,
-		IdleConnTimeout:   30 * time.Second,
+		Proxy:                  http.ProxyFromEnvironment,
+		OnProxyConnectResponse: checkProxyConnect,
+		DialContext:            dial,
+		TLSClientConfig:        tlsConfig,
+		ForceAttemptHTTP2:      !httpsProxy(base),
+		IdleConnTimeout:        30 * time.Second,
 	}
 	return &Client{
 		http: &http.Client{
@@ -80,7 +87,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 			Timeout:       cfg.Timeout,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		base:        "https://api-" + cfg.Zone + ".exoscale.com/v2/kms-key/",
+		base:        base,
 		apiKey:      cfg.APIKey,
 		secret:      cfg.APISecret,
 		contextName: []byte(cfg.EncryptionContext),
@@ -255,6 +262,28 @@ func SafeProblemType(problemType string) string {
 	}
 }
 
+// httpsProxy reports whether the environment selects an https:// proxy for
+// base. net/http offers HTTP/2 in ALPN to such a proxy and then writes an
+// HTTP/1.1 CONNECT, which a proxy that selects HTTP/2 cannot parse. Without
+// ForceAttemptHTTP2 the client offers no ALPN and uses HTTP/1.1 end to end.
+func httpsProxy(base string) bool {
+	target, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	proxy, err := http.ProxyFromEnvironment(&http.Request{URL: target})
+	return err == nil && proxy != nil && proxy.Scheme == "https"
+}
+
+// checkProxyConnect retains the retry signal for transient CONNECT statuses.
+// net/http otherwise returns the proxy's free-form status text as an error.
+func checkProxyConnect(_ context.Context, _ *url.URL, _ *http.Request, response *http.Response) error {
+	if transientStatus(response.StatusCode) {
+		return errProxyUnavailable
+	}
+	return nil
+}
+
 func classifyTransport(ctx context.Context, operation string, cause error) ([]byte, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, fmt.Errorf("Exoscale KMS %s: %w", operation, err)
@@ -275,7 +304,8 @@ func classifyTransport(ctx context.Context, operation string, cause error) ([]by
 		diagnostic, retry = "connection refused", true
 	case errors.Is(cause, io.ErrUnexpectedEOF):
 		diagnostic, retry = "truncated response", true
-	case errors.As(cause, &netErr), errors.Is(cause, io.EOF), errors.Is(cause, syscall.ECONNRESET):
+	case errors.Is(cause, errProxyUnavailable), errors.As(cause, &netErr),
+		errors.Is(cause, io.EOF), errors.Is(cause, syscall.ECONNRESET):
 		retry = true
 	}
 	// Keep peer-controlled transport text out of the error chain.

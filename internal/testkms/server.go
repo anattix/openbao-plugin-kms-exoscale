@@ -45,6 +45,8 @@ const (
 	Zone = "ch-gva-2"
 	// ReplicaZone is the second logical hostname routed to the same fake.
 	ReplicaZone = "ch-dk-2"
+	// ProxyHost is a non-resolving DNS name in the fake TLS certificate.
+	ProxyHost = "kms-proxy.invalid"
 )
 
 // Hook can inject an HTTP failure before the fake processes an operation.
@@ -185,7 +187,7 @@ func makeCert(t *testing.T) (tls.Certificate, []byte) {
 		t.Fatal("generate fake TLS key")
 	}
 	root := &x509.Certificate{
-		SerialNumber: big.NewInt(1), IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)}, DNSNames: []string{"api-" + Zone + ".exoscale.com", "api-" + ReplicaZone + ".exoscale.com"},
+		SerialNumber: big.NewInt(1), IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)}, DNSNames: []string{"api-" + Zone + ".exoscale.com", "api-" + ReplicaZone + ".exoscale.com", ProxyHost},
 		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
 		IsCA: true, BasicConstraintsValid: true,
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,

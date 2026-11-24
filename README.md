@@ -2,7 +2,7 @@
 
 # Exoscale KMS for OpenBao and OpenTofu
 
-Release candidate `v0.2.0-rc.2`.
+Release candidate `v0.2.0-rc.3`.
 
 - `openbao-plugin-kms-exoscale` provides the `exoscale` auto-unseal seal for
   OpenBao 2.7.2. It serves the `exoscalekms` wrapper proposed by the Exoscale
@@ -67,7 +67,7 @@ plugin_directory = "/opt/openbao/plugins"
 
 plugin "kms" "exoscale" {
   command   = "openbao-plugin-kms-exoscale"
-  version   = "v0.2.0-rc.1"
+  version   = "v0.2.0-rc.3"
   sha256sum = "<verified 64-character SHA-256 digest>"
 }
 
@@ -120,12 +120,12 @@ plugin. Entries in `env` are configuration literals. Verify environment
 forwarding in your deployment if you inject credentials through the parent
 environment. [OpenBao plugin configuration](https://openbao.org/docs/configuration/plugins/)
 
-By default the plugin uses `https://api-ZONE.exoscale.com/v2` directly.
-Allow outbound HTTPS to `api-ch-gva-2.exoscale.com:443` for `ch-gva-2` or to
-`api-ch-dk-2.exoscale.com:443` for `ch-dk-2`. With an explicit endpoint, allow
-its configured HTTPS destination. These are the direct destinations. The SDK
-can use a proxy configured in the plugin environment. The bare upstream
-wrapper discovers the zone
+The plugin connects directly to `https://api-ZONE.exoscale.com/v2` unless its
+environment selects a proxy. See [HTTPS proxy](#https-proxy) for supported proxies.
+For direct connections, allow outbound HTTPS to `api-ch-gva-2.exoscale.com:443`
+for `ch-gva-2` or to `api-ch-dk-2.exoscale.com:443` for `ch-dk-2`. With an
+explicit endpoint, allow its configured HTTPS destination.
+The bare upstream wrapper discovers the zone
 through `ListZones` at `api-ch-gva-2.exoscale.com:443` when given only a zone.
 This binary supplies the zone endpoint and skips discovery. Set `endpoint`
 explicitly, as in the example, so that a future upstream plugin binary using
@@ -135,7 +135,7 @@ signed `GetKmsKey` call to that endpoint, exercised by `plugin_roundtrip`.
 
 ### Upgrading from v0.1.x
 
-v0.2.0-rc.1 refuses endpoints ending in `/v2/` and unresolved
+Since v0.2.0-rc.1, the plugin refuses endpoints ending in `/v2/` and unresolved
 `file://` or `env://` credential references even when
 `EXOSCALE_API_KEY` or `EXOSCALE_API_SECRET` supplies a value.
 v0.1.x normalized the trailing slash and ignored such references when
@@ -362,6 +362,51 @@ certificates to the system pool. For a deliberate old-key transition, list
 permitted older UUIDs in `EXOSCALEKMS_ALLOWED_KEY_IDS` and retain their
 decrypt permissions. The provider validates its stored metadata and key UUID
 before requesting a decryption key.
+
+## HTTPS proxy
+
+Since v0.2.0-rc.2, the OpenTofu key provider has gained proxy support. The
+OpenBao seal already used the proxy environment through its upstream SDK,
+and its network behavior is unchanged. The seal imports the shared
+`internal/kmsapi` package for validation. The provider's transport changes
+modify that package and affect Go's build metadata and source line tables
+in the seal executable. Verify and pin the new seal SHA-256 when installing
+the v0.2.0-rc.3 binary.
+
+Both binaries use `HTTPS_PROXY` (or `https_proxy`) for KMS HTTPS requests.
+`NO_PROXY` (or `no_proxy`) bypasses the proxy for matching destinations.
+Without a matching proxy setting, the connection is direct. Go uses
+`HTTP_PROXY` and `http_proxy` for HTTP requests.
+
+| Binary | `http://` CONNECT proxy | `https://` CONNECT proxy |
+| --- | --- | --- |
+| OpenTofu key provider | Supported for proxies without authentication. | Uses HTTP/1.1 for CONNECT and for the KMS request through the tunnel. This works with a proxy that also offers HTTP/2 when it accepts HTTP/1.1. |
+| OpenBao seal plugin | Supported for proxies without authentication. | Works with a proxy that negotiates HTTP/1.1. The upstream SDK offers HTTP/2 to the proxy and then sends an HTTP/1.1 CONNECT, so the call fails closed if the proxy selects HTTP/2. With `GODEBUG=http2client=0` in the plugin environment the SDK offers only HTTP/1.1, and such a proxy works. |
+
+For OpenTofu, supply the settings in the external key provider's process
+environment. For OpenBao, use the plugin stanza's `env` parameter for
+non-secret settings, such as `NO_PROXY` and proxy URLs without user
+information. Entries in `env` are configuration literals. Inject a proxy
+URL containing credentials through a deployment secret into the plugin's
+process environment and verify that the launcher forwards it.
+`GODEBUG=http2client=0` is a non-secret setting for `env`, for example
+`env = ["GODEBUG=http2client=0"]`; add it to any existing `GODEBUG` value
+with a comma. It turns off HTTP/2 only in the plugin's Go HTTP client. The
+plugin's gRPC connection to OpenBao does not depend on it, and the KMS
+service answered with HTTP/1.1 in measured requests that offered HTTP/2, so
+the KMS exchange stays the same. `TestPluginHTTPSProxy` covers the three seal cases.
+
+Use a supported `https://` proxy for proxy authentication. Go sends proxy
+credentials in the CONNECT request's `Proxy-Authorization` header, which
+travels in clear text over an `http://` proxy connection. A CONNECT proxy
+sees the tunnel destination. The client verifies the KMS server certificate
+through the tunnel. End-to-end TLS protects the KMS body, API credentials
+and signature. Exempt KMS destinations from TLS inspection, since a
+trusted TLS-inspecting proxy can read KMS requests and responses.
+The provider's optional `EXOSCALEKMS_CA_FILE` adds certificates to system trust.
+The existing attempt and call deadlines include the proxy connection,
+CONNECT negotiation and TLS handshake. The seal's SDK redirect behavior is
+described below.
 
 ## Failure behavior and limits
 
@@ -623,6 +668,12 @@ With the module cache populated as above, run the local tests with
 plugin test harness. Run the unchanged wrapper tests from the root module
 so they use the pinned dependency graph.
 
+The offline fake-backed provider and KMS client suites clear inherited proxy variables unless
+`EXOSCALEKMS_LIVE=1`, so a proxy in the test environment does not reach the
+loopback fakes. The raw API client of the live suites connects directly and
+ignores proxy variables, so run `TestLiveAPIConformance` and the rotation and
+disposable switches where the KMS endpoints are directly reachable.
+
 ```sh
 go list ./... | while IFS= read -r package; do
   GOPROXY=off go test -mod=readonly -timeout 10m -count=1 "$package" || exit
@@ -688,7 +739,7 @@ read metadata. The following switches opt into additional probes.
   credential being checked for least privilege.
 
 In the 2026-11-22 operator rehearsal on OpenBao 2.7.2 against live KMS,
-all eight stages passed in 40 seconds with a known key. These included initialization,
+all eight stages passed in 38 seconds with a known key. These included initialization,
 auto-unseal after restart, wrong-credential refusal with the fixed
 `Exoscale KMS configure: HTTP 403 (unclassified)` diagnostic, recovery
 after restoring credentials and all four migration directions. With an
